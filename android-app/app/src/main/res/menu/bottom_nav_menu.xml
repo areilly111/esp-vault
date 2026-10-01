@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android">
+    <item
+        android:id="@+id/nav_codes"
+        android:title="Codes"
+        android:icon="@drawable/ic_nav_codes" />
+    <item
+        android:id="@+id/nav_passwords"
+        android:title="Passwords"
+        android:icon="@drawable/ic_nav_passwords" />
+    <item
+        android:id="@+id/nav_backup"
+        android:title="Backup"
+        android:icon="@drawable/ic_nav_backup" />
+    <item
+        android:id="@+id/nav_settings"
+        android:title="Settings"
+        android:icon="@drawable/ic_nav_settings" />
+</menu>

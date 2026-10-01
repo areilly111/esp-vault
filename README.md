@@ -26,7 +26,7 @@ Built for the [ESP32-C3 SuperMini with 0.42" OLED](https://github.com/peff74/ESP
 
 ## The app
 
-The Android app (`Esp Vault`) handles all management over BLE:
+The Android app (`Esp Vault`, source in [android-app/](android-app/)) handles all management over BLE:
 
 - View live TOTP codes with countdown
 - Browse, search, add, edit, and delete passwords
