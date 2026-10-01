@@ -35,7 +35,7 @@ bool portalPasswordMustChange = false;  // true until the user replaces the defa
 const char* PORTAL_SETTINGS_FILE = "/portal_settings.json"; 
 
 // Store WiFi and NTP info for display
-String ntpServerName = "tick.umanitoba.ca, ca.pool.ntp.org";
+String ntpServerName = "pool.ntp.org, time.google.com";
 String lastWifiSSID = "";
 String lastWifiBSSID = "";
 
@@ -103,7 +103,7 @@ unsigned long usernameScrollTime = 0;
 int passwordScrollX = 0;
 unsigned long passwordScrollTime = 0; 
 
-const char* ntpServer = "tick.umanitoba.ca";
+const char* ntpServer = "pool.ntp.org";
 // (Timezone is handled via POSIX TZ string; see timezoneTz.)
 
 const char* VAULT_FILE = "/vault.json";
@@ -381,7 +381,7 @@ void loadTimezone() {
             timezoneTz = doc["tz"].as<String>();
         } else if (doc.containsKey("offset")) {
             // Old numeric-offset files can't express DST; fall back to the
-            // Winnipeg POSIX TZ (a strict improvement over fixed UTC-5).
+            // POSIX TZ (a strict improvement over a fixed offset).
             Serial.println("Note: old numeric timezone offset ignored, using POSIX TZ");
             timezoneName = "UTC";
             timezoneTz = "UTC0";
@@ -2141,7 +2141,7 @@ void setup() {
     }
 
     // Configure NTP servers early (will start syncing as soon as WiFi connects)
-    configTime(0, 0, "tick.umanitoba.ca", "ca.pool.ntp.org");
+    configTime(0, 0, "pool.ntp.org", "ca.pool.ntp.org");
     applyTimezone();  // configTime resets TZ; re-apply our POSIX TZ for localtime_r
     Serial.println("NTP servers configured, will sync when WiFi ready");
     

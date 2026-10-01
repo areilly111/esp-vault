@@ -214,12 +214,12 @@ textarea#fileContent { flex: 1; min-height: 240px; background: #0f172a; border: 
         <div style="margin-bottom:20px;">
           <h3 style="color:var(--primary);font-size:14px;margin:0 0 8px 0;">Timezone</h3>
           <select id="timezoneSelect">
-            <option value="CST6CDT,M3.2.0,M11.1.0">America/Winnipeg</option>
+            <option value="UTC0">UTC</option>
             <option value="EST5EDT,M3.2.0,M11.1.0">America/New_York</option>
             <option value="CST6CDT,M3.2.0,M11.1.0">America/Chicago</option>
+            <option value="CST6CDT,M3.2.0,M11.1.0">America/Winnipeg</option>
             <option value="MST7MDT,M3.2.0,M11.1.0">America/Denver</option>
             <option value="PST8PDT,M3.2.0,M11.1.0">America/Los_Angeles</option>
-            <option value="UTC0">UTC</option>
             <option value="GMT0BST,M3.5.0/1,M10.5.0">Europe/London</option>
             <option value="CET-1CEST,M3.5.0,M10.5.0">Europe/Paris</option>
             <option value="CST-8">Asia/Shanghai</option>
@@ -861,11 +861,11 @@ function toggleSystemSettings() {
 }
 
 var TZ_OPTIONS = [
-  'CST6CDT,M3.2.0,M11.1.0',      // America/Winnipeg, America/Chicago
+  'UTC0',                         // UTC
   'EST5EDT,M3.2.0,M11.1.0',      // America/New_York
+  'CST6CDT,M3.2.0,M11.1.0',      // America/Chicago, America/Winnipeg
   'MST7MDT,M3.2.0,M11.1.0',      // America/Denver
   'PST8PDT,M3.2.0,M11.1.0',      // America/Los_Angeles
-  'UTC0',                        // UTC
   'GMT0BST,M3.5.0/1,M10.5.0',    // Europe/London
   'CET-1CEST,M3.5.0,M10.5.0',    // Europe/Paris
   'CST-8',                       // Asia/Shanghai

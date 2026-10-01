@@ -1,6 +1,6 @@
-# Esp Vault BLE Protocol v1 (firmware v1.4.9)
+# Keychain Vault BLE Protocol v1 (firmware v1.4.9)
 
-Companion-device protocol for the ESP32-C3 Esp Vault. The same protocol
+Companion-device protocol for the ESP32-C3 Keychain Vault. The same protocol
 is spoken by the Linux Python GUI and (later) the Android app.
 
 > **v1.4.9 note:** BLE password reads (labels, count, single entry) now serve
@@ -28,7 +28,7 @@ Firmware version introducing BLE: **1.4.0**. Button gestures (1.4.2+). Full entr
 
 ## Transport
 
-- BLE GATT server on the ESP32-C3 ("EspVault" advertised name, service
+- BLE GATT server on the ESP32-C3 ("KeychainVault" advertised name, service
   UUID advertised).
 - Radio is **off by default** outside portal mode. It can be enabled two
   ways: Portal Settings → Bluetooth (web), or the app writing the
@@ -54,7 +54,7 @@ before login. Do not treat this as strong security.
 
 ## Service
 
-`81f3d5eb-25b8-4077-aff6-c578a9613ab6` — Esp Vault service. The
+`81f3d5eb-25b8-4077-aff6-c578a9613ab6` — Keychain Vault service. The
 firmware implementation is authoritative if anything here drifts.
 
 | Characteristic | UUID | Props | Description |
@@ -84,7 +84,7 @@ firmware implementation is authoritative if anything here drifts.
 | `ble_auto` | e2e0fbd6-009f-4e45-97d6-c045bf512e66 | write + read | **(1.4.5+)** BLE auto-start flag (normal auth: unlocked + `auth`). Write JSON `{"auto":1}` / `{"auto":0}` → `OK AUTO ON` / `OK AUTO OFF`. Read → `{"auto":1}` or `{"auto":0}`. Same flag as Portal Settings → Bluetooth. |
 | `pw_change` | 4a0cb1b6-5c35-4ad6-a253-81edbf811000 | write | **(1.4.6+)** Change the portal password (normal auth: unlocked + `auth`). JSON `{"old":"…","new":"…"}` (new ≥ 8 chars) → `OK CHANGED` / `ERR OLD` / `ERR SHORT` / `ERR JSON`. |
 | `wifi_set` | a9cdd97a-f770-4d5a-9d82-1a224859ce91 | write | **(1.4.6+)** Update WiFi credentials (normal auth: unlocked + `auth`). JSON `{"ssid":"…","password":"…"}` → saves WiFi network 1 (`OK WIFI` / `ERR SSID` / `ERR JSON`). Same storage as `setup_set_wifi`. |
-| `tz` | 4f0c630a-50a2-4348-ad1b-425a39900942 | write + read | **(1.4.6+)** Timezone (normal auth: unlocked + `auth`). Write JSON `{"name":"America/Winnipeg","tz":"CST6CDT,M3.2.0,M11.1.0"}` (POSIX TZ) → applied immediately (`OK TZ` / `ERR TZ` / `ERR JSON`). Read → `{"name":"…","tz":"…"}`. |
+| `tz` | 4f0c630a-50a2-4348-ad1b-425a39900942 | write + read | **(1.4.6+)** Timezone (normal auth: unlocked + `auth`). Write JSON `{"name":"America/Chicago","tz":"CST6CDT,M3.2.0,M11.1.0"}` (POSIX TZ) → applied immediately (`OK TZ` / `ERR TZ` / `ERR JSON`). Read → `{"name":"…","tz":"…"}`. |
 | `vault_export` | 8113d85b-9feb-470e-a36e-5ccbab8dac90 | read | **(1.4.7+)** Full TOTP vault export for backups (normal auth: unlocked + `auth`). Read → `[{"label":"…","secret":"…"}, …]`. Lets the app build a Bitwarden-compatible backup file (the per-code path only returns current codes, never secrets). |
 
 ### First-boot setup flow (1.4.5+, app side)
@@ -106,7 +106,7 @@ Note: characteristic UUIDs above are final in firmware 1.4.0.
 ## Typical session (Linux GUI)
 
 1. Triple-tap the device to unlock (BLE auto-starts if enabled in portal).
-2. Scan → connect to `EspVault`.
+2. Scan → connect to `KeychainVault`.
 3. Read `device_info` → show firmware / lock state (`KV1;<fw>;<locked 0/1>`).
 4. Subscribe to `status`, `totp_code`, `pw_entry`.
 5. Write portal password to `auth` → wait for `OK AUTH` on `status`
