@@ -119,7 +119,10 @@ class BleManager(private val context: Context, private val listener: Listener) {
             .build()
         val cb = object : ScanCallback() {
             override fun onScanResult(callbackType: Int, result: ScanResult) {
-                if (result.device?.name == Protocol.DEVICE_NAME) {
+                // Service-UUID filter already guarantees this is our vault device;
+                // accept it even if the advertised name is hidden (neverForLocation).
+                val name = try { result.device?.name } catch (_: SecurityException) { null }
+                if (name == null || name == Protocol.DEVICE_NAME) {
                     stopScan()
                     main.post { listener.onDeviceFound(result.device) }
                 }

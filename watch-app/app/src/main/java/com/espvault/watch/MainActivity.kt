@@ -41,28 +41,67 @@ import kotlinx.coroutines.delay
 
 class MainActivity : ComponentActivity() {
 
+    companion object {
+        private val BLE_PERMS = arrayOf(
+            Manifest.permission.BLUETOOTH_SCAN,
+            Manifest.permission.BLUETOOTH_CONNECT
+        )
+    }
+
+    internal val permsGranted = mutableStateOf(false)
+    private var askedOnce = false
+
     private val permLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
-    ) { /* viewmodel handles missing perms via error state */ }
+    ) { refreshPermState() }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val needed = listOf(
-            Manifest.permission.BLUETOOTH_SCAN,
-            Manifest.permission.BLUETOOTH_CONNECT
-        ).filter {
-            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
-        }
-        if (needed.isNotEmpty()) permLauncher.launch(needed.toTypedArray())
+        refreshPermState()
         setContent { WatchApp() }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Re-check: user may have granted/denied in Settings.
+        refreshPermState()
+    }
+
+    private fun hasBlePerms(): Boolean = BLE_PERMS.all {
+        ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun refreshPermState() {
+        permsGranted.value = hasBlePerms()
+    }
+
+    fun requestBlePerms() {
+        askedOnce = true
+        permLauncher.launch(BLE_PERMS)
+    }
+
+    /** True if the user already saw the system dialog and it won't show again. */
+    fun permsPermanentlyDenied(): Boolean {
+        if (!askedOnce || hasBlePerms()) return false
+        return BLE_PERMS.none { shouldShowRequestPermissionRationale(it) }
     }
 }
 
 @Composable
 fun WatchApp(vm: WatchViewModel = viewModel()) {
     val context = androidx.compose.ui.platform.LocalContext.current
-    LaunchedEffect(Unit) { vm.init(context) }
+    val activity = context as? MainActivity
+    val granted by (activity?.permsGranted ?: mutableStateOf(true))
+    // Only init BLE once permissions are granted.
+    LaunchedEffect(granted) { if (granted) vm.init(context) }
     MaterialTheme {
+        if (!granted) {
+            PermissionGate(
+                permanentlyDenied = activity?.permsPermanentlyDenied() == true,
+                onRequest = { activity?.requestBlePerms() }
+            )
+            return@MaterialTheme
+        }
         val nav = rememberSwipeDismissableNavController()
         val conn by vm.conn.collectAsState()
 
@@ -311,6 +350,33 @@ fun PwDetailScreen(vm: WatchViewModel) {
             }
             Text("Password", style = MaterialTheme.typography.caption1, modifier = Modifier.padding(top = 8.dp))
             Text(d.password, textAlign = TextAlign.Center)
+        }
+    }
+}
+
+@Composable
+fun PermissionGate(permanentlyDenied: Boolean, onRequest: () -> Unit) {
+    Column(
+        modifier = Modifier.fillMaxSize().padding(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Text(
+            "Bluetooth needed",
+            style = MaterialTheme.typography.title3,
+            textAlign = TextAlign.Center
+        )
+        Text(
+            if (permanentlyDenied)
+                "Permission was denied. Open Settings > Apps > Esp Vault > Permissions and allow Bluetooth, then come back."
+            else
+                "Esp Vault needs Bluetooth permission to find and connect to your vault device.",
+            style = MaterialTheme.typography.body2,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.padding(top = 8.dp, bottom = 12.dp)
+        )
+        if (!permanentlyDenied) {
+            Button(onClick = onRequest) { Text("Allow Bluetooth") }
         }
     }
 }
