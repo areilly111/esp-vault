@@ -60,6 +60,24 @@ class WatchViewModel : ViewModel(), BleManager.Listener {
     private val _status = MutableStateFlow("")
     val status: StateFlow<String> = _status
 
+    // ---- Bitwarden server sync (second sync source) ----
+    // Server URL + email are kept in private prefs; the refresh token too so
+    // "Sync now" is one tap. The master password is never stored — it's asked
+    // for on every sync and only lives in memory long enough to derive keys.
+    private val _bwServer = MutableStateFlow("")
+    val bwServer: StateFlow<String> = _bwServer
+
+    private val _bwEmail = MutableStateFlow("")
+    val bwEmail: StateFlow<String> = _bwEmail
+
+    private val _bwState = MutableStateFlow<ConnState>(ConnState.Idle)
+    val bwState: StateFlow<ConnState> = _bwState
+
+    private val _bwStatus = MutableStateFlow("")
+    val bwStatus: StateFlow<String> = _bwStatus
+
+    private var bwJob: Job? = null
+
     // ---- sync accumulation ----
     private val pendingTotps = mutableListOf<TotpEntry>()
     private val pwAccum = mutableListOf<PwEntry>()
@@ -76,6 +94,10 @@ class WatchViewModel : ViewModel(), BleManager.Listener {
         _lastSyncAt.value = snap.syncedAt
         _hasCache.value = snap.syncedAt > 0L
         ble = BleManager(context.applicationContext, this)
+        // Bitwarden server config, if the user set one up before.
+        val prefs = context.applicationContext.getSharedPreferences("bw", Context.MODE_PRIVATE)
+        _bwServer.value = prefs.getString("server", "").orEmpty()
+        _bwEmail.value = prefs.getString("email", "").orEmpty()
     }
 
     fun startScan() {
@@ -111,6 +133,66 @@ class WatchViewModel : ViewModel(), BleManager.Listener {
 
     fun clearSelectedPw() {
         _selectedPw.value = null
+    }
+
+    // ---- Bitwarden sync ----
+
+    fun hasBwConfig(): Boolean = _bwServer.value.isNotEmpty() && _bwEmail.value.isNotEmpty()
+
+    fun clearBwConfig() {
+        val ctx = appContext ?: return
+        ctx.getSharedPreferences("bw", Context.MODE_PRIVATE).edit().clear().apply()
+        _bwServer.value = ""
+        _bwEmail.value = ""
+        _bwState.value = ConnState.Idle
+    }
+
+    /**
+     * Pulls the vault from the Bitwarden server, decrypts it on-watch, and
+     * replaces the local cache — the same cache the BLE sync fills.
+     * [server]/[email] are remembered for next time when non-empty;
+     * [password] (master password) is never stored.
+     */
+    fun syncFromBitwarden(server: String, email: String, password: String) {
+        val ctx = appContext ?: return
+        bwJob?.cancel()
+        _bwState.value = ConnState.Syncing
+        _bwStatus.value = ""
+        bwJob = viewModelScope.launch {
+            try {
+                val prefs = ctx.getSharedPreferences("bw", Context.MODE_PRIVATE)
+                val savedRefresh = prefs.getString("refresh", null)
+                val (data, newRefresh) = BitwardenSync.sync(
+                    server, email, password, savedRefresh
+                ) { _bwStatus.value = it }
+                // Remember server+email+refresh for one-tap syncs.
+                prefs.edit()
+                    .putString("server", server.trim().trimEnd('/'))
+                    .putString("email", email.trim())
+                    .putString("refresh", newRefresh ?: savedRefresh)
+                    .apply()
+                _bwServer.value = server.trim().trimEnd('/')
+                _bwEmail.value = email.trim()
+                // Same finish as a BLE sync: cache becomes the app.
+                _totps.value = data.totps
+                _pwEntries.value = data.passwords
+                _lastSyncAt.value = System.currentTimeMillis()
+                _hasCache.value = true
+                VaultCache.save(ctx, data.totps, data.passwords)
+                _bwStatus.value = "Synced ✓"
+                _bwState.value = ConnState.Ready
+            } catch (e: Exception) {
+                _bwState.value = ConnState.Error(
+                    e.message?.take(120) ?: "Sync failed"
+                )
+            }
+        }
+    }
+
+    fun resetBwState() {
+        bwJob?.cancel()
+        _bwState.value = ConnState.Idle
+        _bwStatus.value = ""
     }
 
     // ---- auto-scan handoff ----

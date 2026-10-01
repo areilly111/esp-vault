@@ -32,6 +32,11 @@ android {
     buildFeatures {
         compose true
     }
+    packaging {
+        resources {
+            excludes += 'META-INF/versions/9/OSGI-INF/MANIFEST.MF'
+        }
+    }
     composeOptions {
         kotlinCompilerExtensionVersion = "1.5.14"
     }
@@ -47,4 +52,6 @@ dependencies {
     implementation 'androidx.lifecycle:lifecycle-runtime-compose:2.8.5'
     implementation 'androidx.lifecycle:lifecycle-viewmodel-compose:2.8.5'
     implementation 'androidx.wear:wear-input:1.2.0'
+    // Argon2id KDF for Bitwarden accounts that use it (PBKDF2 is built-in)
+    implementation 'org.bouncycastle:bcprov-jdk18on:1.78.1'
 }

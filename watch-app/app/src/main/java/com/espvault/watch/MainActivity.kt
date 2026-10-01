@@ -143,8 +143,17 @@ fun WatchApp(vm: WatchViewModel = viewModel()) {
                 CodesScreen(
                     vm,
                     onPasswords = { nav.navigate("passwords") },
-                    onSync = { vm.requestAutoScan(); nav.navigate("connect") }
+                    onSync = { nav.navigate("syncmenu") }
                 )
+            }
+            composable("syncmenu") {
+                SyncMenuScreen(
+                    onBle = { vm.requestAutoScan(); nav.navigate("connect") },
+                    onBw = { nav.navigate("bwsync") }
+                )
+            }
+            composable("bwsync") {
+                BwSyncScreen(vm, onDone = { nav.popBackStack("codes", false) })
             }
             composable("passwords") {
                 PasswordsScreen(vm, onSelect = { i ->
@@ -455,6 +464,169 @@ fun PermissionGate(permanentlyDenied: Boolean, onRequest: () -> Unit) {
         )
         if (!permanentlyDenied) {
             Button(onClick = onRequest) { Text("Allow Bluetooth") }
+        }
+    }
+}
+
+/** Reusable RemoteInput launcher: [onText] gets (key, entered text). */
+@Composable
+fun rememberRemoteInputLauncher(
+    onText: (key: String, text: String) -> Unit
+): androidx.activity.result.ActivityResultLauncher<android.content.Intent> =
+    androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val results = android.app.RemoteInput.getResultsFromIntent(result.data)
+        val key = results?.keySet()?.firstOrNull()
+        val text = key?.let { results.getCharSequence(it)?.toString().orEmpty() }.orEmpty()
+        if (key != null && text.isNotEmpty()) onText(key, text)
+    }
+
+fun launchTextInput(
+    launcher: androidx.activity.result.ActivityResultLauncher<android.content.Intent>,
+    key: String,
+    label: String
+) {
+    val remoteInput = android.app.RemoteInput.Builder(key).setLabel(label).build()
+    val intent = androidx.wear.input.RemoteInputIntentHelper.createActionRemoteInputIntent()
+    androidx.wear.input.RemoteInputIntentHelper.putRemoteInputsExtra(intent, listOf(remoteInput))
+    launcher.launch(intent)
+}
+
+@Composable
+fun SyncMenuScreen(onBle: () -> Unit, onBw: () -> Unit) {
+    Column(
+        modifier = Modifier.fillMaxSize().padding(8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Text("Sync from", style = MaterialTheme.typography.title3)
+        Chip(
+            label = {
+                Column {
+                    Text("Vault device")
+                    Text("Bluetooth", style = MaterialTheme.typography.caption2)
+                }
+            },
+            onClick = onBle,
+            modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
+        )
+        Chip(
+            label = {
+                Column {
+                    Text("Bitwarden server")
+                    Text("Wi-Fi", style = MaterialTheme.typography.caption2)
+                }
+            },
+            onClick = onBw,
+            modifier = Modifier.fillMaxWidth().padding(top = 4.dp)
+        )
+    }
+}
+
+@Composable
+fun BwSyncScreen(vm: WatchViewModel, onDone: () -> Unit) {
+    val bwState by vm.bwState.collectAsState()
+    val bwStatus by vm.bwStatus.collectAsState()
+    val server by vm.bwServer.collectAsState()
+    val email by vm.bwEmail.collectAsState()
+    val configured = server.isNotEmpty() && email.isNotEmpty()
+
+    var setupServer by remember { mutableStateOf("") }
+    var setupEmail by remember { mutableStateOf("") }
+
+    // Indirect through a ref so the callback can launch follow-up inputs.
+    val onTextRef = remember { mutableStateOf<(String, String) -> Unit>({ _, _ -> }) }
+    val launcher = rememberRemoteInputLauncher { key, text -> onTextRef.value(key, text) }
+    onTextRef.value = { key, text ->
+        when (key) {
+            "bw_server" -> {
+                setupServer = text.trim().trimEnd('/')
+                launchTextInput(launcher, "bw_email", "Email")
+            }
+            "bw_email" -> {
+                setupEmail = text.trim()
+                launchTextInput(launcher, "bw_pw", "Master password")
+            }
+            "bw_pw" -> {
+                val s = if (configured) server else setupServer
+                val e = if (configured) email else setupEmail
+                if (s.isNotEmpty() && e.isNotEmpty()) vm.syncFromBitwarden(s, e, text)
+            }
+        }
+    }
+
+    // Fresh state each time the screen opens.
+    LaunchedEffect(Unit) { vm.resetBwState() }
+    // Leave on success after a beat.
+    if (bwState is ConnState.Ready) {
+        LaunchedEffect(Unit) {
+            delay(1200)
+            vm.resetBwState()
+            onDone()
+        }
+    }
+
+    Column(
+        modifier = Modifier.fillMaxSize().padding(8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Text("Bitwarden sync", style = MaterialTheme.typography.title3)
+        when (val s = bwState) {
+            is ConnState.Syncing -> {
+                CircularProgressIndicator(modifier = Modifier.padding(12.dp))
+                Text(bwStatus.ifEmpty { "Syncing…" }, textAlign = TextAlign.Center)
+            }
+            is ConnState.Ready -> {
+                Text("✓", style = MaterialTheme.typography.title1)
+                Text("Synced", textAlign = TextAlign.Center, modifier = Modifier.padding(top = 4.dp))
+            }
+            is ConnState.Error -> {
+                Text(s.msg, textAlign = TextAlign.Center)
+                Button(onClick = { vm.resetBwState() }, modifier = Modifier.padding(top = 8.dp)) {
+                    Text("Back")
+                }
+            }
+            else -> {
+                if (configured) {
+                    Text(server, style = MaterialTheme.typography.caption1, textAlign = TextAlign.Center)
+                    Text(email, style = MaterialTheme.typography.caption2, textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(bottom = 8.dp))
+                    Text(
+                        "Master password is asked each time and never stored.",
+                        style = MaterialTheme.typography.caption2,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(bottom = 8.dp)
+                    )
+                    Chip(
+                        label = { Text("Sync now") },
+                        onClick = { launchTextInput(launcher, "bw_pw", "Master password") },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Chip(
+                        label = { Text("Forget server") },
+                        onClick = { vm.clearBwConfig() },
+                        modifier = Modifier.fillMaxWidth().padding(top = 4.dp)
+                    )
+                } else {
+                    Text(
+                        "One-time setup: server address, email, master password.",
+                        style = MaterialTheme.typography.caption1,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(vertical = 8.dp)
+                    )
+                    Text(
+                        "Needs Wi-Fi that can reach your server.",
+                        style = MaterialTheme.typography.caption2,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(bottom = 8.dp)
+                    )
+                    Button(onClick = { launchTextInput(launcher, "bw_server", "Server URL") }) {
+                        Text("Set up")
+                    }
+                }
+            }
         }
     }
 }
