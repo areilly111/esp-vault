@@ -35,6 +35,12 @@ The Android app (`Esp Vault`, source in [android-app/](android-app/)) does all t
 - Scan QR codes to add TOTP entries
 - Generate strong passwords
 
+## The watch app
+
+There's also a Wear OS app ([watch-app/](watch-app/)) that talks to the vault directly over BLE — no phone needed. It syncs your TOTP secrets and password list, then computes codes on the watch itself, so they keep working even when the vault is out of range. Good for a Galaxy Watch.
+
+One thing: the vault only does one BLE connection at a time, so disconnect the phone app before the watch connects.
+
 ## BLE protocol
 
 [BLE_PROTOCOL.md](BLE_PROTOCOL.md) has the full characteristic list and message formats, if you ever want to write your own client.
