@@ -17,8 +17,6 @@ import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import android.os.ParcelUuid
-import org.json.JSONArray
-import org.json.JSONObject
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.UUID
@@ -36,18 +34,17 @@ import java.util.UUID
 @SuppressLint("MissingPermission") // caller checks runtime permissions first
 class BleManager(private val context: Context, private val listener: Listener) {
 
+    /**
+     * Read-only listener. The watch only pulls vault data from the device —
+     * it never writes vault entries, settings, or anything else to it.
+     * (The auth PIN write is authentication, not vault data.)
+     */
     interface Listener {
         fun onDeviceFound(device: BluetoothDevice)
         fun onDeviceInfo(fw: String, locked: Boolean, setup: Boolean)
-        fun onTotpLabels(labels: List<String>)
-        fun onPwLabels(labels: List<String>)
-        fun onPwLabelPage(labels: List<String>)
         fun onPwCount(count: Int)
         fun onStatus(text: String)
-        fun onTotpCode(label: String, code: String, secondsLeft: Int)
         fun onPwEntry(label: String, username: String, password: String)
-        fun onBleAuto(enabled: Boolean)
-        fun onTimezone(name: String, tz: String)
         fun onVaultExport(json: String)
         fun onDisconnected()
         fun onError(text: String)
@@ -63,6 +60,16 @@ class BleManager(private val context: Context, private val listener: Listener) {
     private var scanner: BluetoothLeScanner? = null
     private var scanCb: ScanCallback? = null
     private var scanning = false
+
+    /** Give up after 15s — an infinite spinner is how "won't connect" feels. */
+    private val scanTimeout = Runnable {
+        if (scanning) {
+            stopScan()
+            main.post {
+                listener.onError("No vault found")
+            }
+        }
+    }
 
     // ---------------- operation queue ----------------
 
@@ -135,10 +142,12 @@ class BleManager(private val context: Context, private val listener: Listener) {
         scanner = sc
         scanCb = cb
         scanning = true
+        main.postDelayed(scanTimeout, 15_000)
         try {
             sc.startScan(listOf(filter), settings, cb)
         } catch (e: Exception) {
             scanning = false
+            main.removeCallbacks(scanTimeout)
             main.post { listener.onError("Could not start scan: ${e.message}") }
         }
     }
@@ -146,6 +155,7 @@ class BleManager(private val context: Context, private val listener: Listener) {
     fun stopScan() {
         if (!scanning) return
         scanning = false
+        main.removeCallbacks(scanTimeout)
         try {
             scanner?.stopScan(scanCb)
         } catch (_: Exception) {
@@ -184,158 +194,22 @@ class BleManager(private val context: Context, private val listener: Listener) {
     fun authenticate(password: String) =
         writeChar(Protocol.AUTH, password.toByteArray(Charsets.UTF_8))
 
-    fun readTotpLabels() {
-        val g = gatt ?: return
-        enqueue { readChar(g, Protocol.VAULT_LABELS) }
-    }
-
-    @Deprecated("Use paged loading via readPwLabelPage() instead")
-    fun readPwLabels() {
-        val g = gatt ?: return
-        enqueue { readChar(g, Protocol.PW_LABELS) }
-    }
-
-    /**
-     * Paged password labels (firmware 1.5.0+): write the page index, then read
-     * the JSON array of up to 20 labels. Each page is <1KB — no giant allocs.
-     */
-    fun readPwLabelPage(page: Int) {
-        writeChar(Protocol.PW_LABEL_PAGE, u16le(page))
-        val g = gatt ?: return
-        enqueue { readChar(g, Protocol.PW_LABEL_PAGE) }
-    }
+    // ---------------- read-only sync operations ----------------
+    // The watch pulls vault data from the device. It never writes entries,
+    // settings, or anything else to it — these are the only operations used.
 
     fun readPwCount() {
         val g = gatt ?: return
         enqueue { readChar(g, Protocol.PW_COUNT) }
     }
 
-    fun requestTotp(index: Int) = writeChar(Protocol.TOTP_REQ, u16le(index))
-
     fun requestPw(index: Int) = writeChar(Protocol.PW_REQ, u16le(index))
 
-    fun timeSync() =
-        writeChar(Protocol.TIME_SYNC, u32le(System.currentTimeMillis() / 1000L))
-
-    fun addTotp(label: String, secret: String) =
-        writeChar(
-            Protocol.ADD_TOTP,
-            """{"label":"$label","secret":"$secret"}""".toByteArray(Charsets.UTF_8)
-        )
-
-    fun lock() = writeChar(Protocol.LOCK, byteArrayOf(1))
-
-    // ---- v1.4.4+ CRUD (JSON payloads, results arrive on status) ----
-
-    fun totpDelete(index: Int) =
-        writeChar(Protocol.TOTP_DELETE, """{"index":$index}""".toByteArray(Charsets.UTF_8))
-
-    fun totpEdit(index: Int, label: String, secret: String) =
-        writeChar(
-            Protocol.TOTP_EDIT,
-            """{"index":$index,"label":"$label","secret":"$secret"}""".toByteArray(Charsets.UTF_8)
-        )
-
-    fun pwAdd(label: String, username: String, password: String) =
-        writeChar(
-            Protocol.PW_ADD,
-            """{"label":"${jsonEsc(label)}","username":"${jsonEsc(username)}","password":"${jsonEsc(password)}"}""".toByteArray(Charsets.UTF_8)
-        )
-
-    fun pwEdit(index: Int, label: String, username: String, password: String) =
-        writeChar(
-            Protocol.PW_EDIT,
-            """{"index":$index,"label":"${jsonEsc(label)}","username":"${jsonEsc(username)}","password":"${jsonEsc(password)}"}""".toByteArray(Charsets.UTF_8)
-        )
-
-    fun pwDelete(index: Int) =
-        writeChar(Protocol.PW_DELETE, """{"index":$index}""".toByteArray(Charsets.UTF_8))
-
-    // ---- v1.4.5+ first-boot setup (no auth; only while setup=1) ----
-
-    fun setupSetPassword(password: String) =
-        writeChar(
-            Protocol.SETUP_SET_PASSWORD,
-            """{"password":"${jsonEsc(password)}"}""".toByteArray(Charsets.UTF_8)
-        )
-
-    fun setupSetWifi(ssid: String, password: String) =
-        writeChar(
-            Protocol.SETUP_SET_WIFI,
-            """{"ssid":"${jsonEsc(ssid)}","password":"${jsonEsc(password)}"}""".toByteArray(Charsets.UTF_8)
-        )
-
-    fun setupComplete() = writeChar(Protocol.SETUP_COMPLETE, byteArrayOf(1))
-
-    // ---- v1.4.5+ BLE auto-start flag (requires unlock + auth) ----
-
-    fun readBleAuto() {
-        val g = gatt ?: return
-        enqueue { readChar(g, Protocol.BLE_AUTO) }
-    }
-
-    fun writeBleAuto(enabled: Boolean) =
-        writeChar(
-            Protocol.BLE_AUTO,
-            """{"auto":${if (enabled) 1 else 0}}""".toByteArray(Charsets.UTF_8)
-        )
-
-    // ---- v1.4.6+ device settings (require unlock + auth) ----
-
-    fun changePortalPassword(old: String, new: String) =
-        writeChar(
-            Protocol.PW_CHANGE,
-            """{"old":"${jsonEsc(old)}","new":"${jsonEsc(new)}"}""".toByteArray(Charsets.UTF_8)
-        )
-
-    fun setWifi(ssid: String, password: String) =
-        writeChar(
-            Protocol.WIFI_SET,
-            """{"ssid":"${jsonEsc(ssid)}","password":"${jsonEsc(password)}"}""".toByteArray(Charsets.UTF_8)
-        )
-
-    fun readTimezone() {
-        val g = gatt ?: return
-        enqueue { readChar(g, Protocol.TZ) }
-    }
-
-    fun writeTimezone(name: String, tz: String) =
-        writeChar(
-            Protocol.TZ,
-            """{"name":"${jsonEsc(name)}","tz":"${jsonEsc(tz)}"}""".toByteArray(Charsets.UTF_8)
-        )
-
-    // ---- v1.4.7+ vault export (requires unlock + auth) ----
+    // ---- vault export (requires unlock + auth) ----
 
     fun readVaultExport() {
         val g = gatt ?: return
         enqueue { readChar(g, Protocol.VAULT_EXPORT) }
-    }
-
-    /** Parse `{"name":"...","tz":"..."}` from the tz characteristic. */
-    private fun parseTimezone(bytes: ByteArray): Pair<String, String>? {
-        return try {
-            val o = JSONObject(String(bytes, Charsets.UTF_8))
-            Pair(o.optString("name", ""), o.optString("tz", ""))
-        } catch (_: Exception) {
-            null
-        }
-    }
-
-    /** Minimal JSON string escaper for characteristic payloads. */
-    private fun jsonEsc(s: String): String {
-        val sb = StringBuilder(s.length + 8)
-        for (c in s) {
-            when (c) {
-                '\\' -> sb.append("\\\\")
-                '"' -> sb.append("\\\"")
-                '\n' -> sb.append("\\n")
-                '\r' -> sb.append("\\r")
-                '\t' -> sb.append("\\t")
-                else -> if (c < ' ') sb.append("\\u%04x".format(c.code)) else sb.append(c)
-            }
-        }
-        return sb.toString()
     }
 
     // ---------------- internals ----------------
@@ -375,41 +249,26 @@ class BleManager(private val context: Context, private val listener: Listener) {
         if (!g.writeDescriptor(desc)) opDone()
     }
 
-    private fun parseLabels(bytes: ByteArray): List<String> {
-        if (bytes.isEmpty()) return emptyList()
-        return try {
-            val arr = JSONArray(String(bytes, Charsets.UTF_8))
-            List(arr.length()) { arr.getString(it) }
-        } catch (_: Exception) {
-            // Don't fail silently: a truncated/unparseable list used to show
-            // up as "0 entries" with no clue. Surface the byte count.
-            main.post { listener.onError("List unreadable (${bytes.size} bytes) — retry") }
-            emptyList()
-        }
-    }
-
-    /** Parse `{"auto":1}` / `{"auto":0}` from the ble_auto characteristic. */
-    private fun parseBleAuto(bytes: ByteArray): Boolean {
-        return try {
-            JSONObject(String(bytes, Charsets.UTF_8)).optInt("auto", 0) == 1
-        } catch (_: Exception) {
-            false
-        }
-    }
-
     private fun u16le(v: Int): ByteArray =
         ByteBuffer.allocate(2).order(ByteOrder.LITTLE_ENDIAN).putShort(v.toShort()).array()
 
-    private fun u32le(v: Long): ByteArray =
-        ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(v.toInt()).array()
-
     private val gattCallback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
-            if (newState == BluetoothProfile.STATE_CONNECTED) {
+            if (newState == BluetoothProfile.STATE_CONNECTED &&
+                status == BluetoothGatt.GATT_SUCCESS
+            ) {
                 g.discoverServices()
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 cleanup()
-                main.post { listener.onDisconnected() }
+                main.post {
+                    // status 0 = we hung up ourselves. Anything else (e.g. 133)
+                    // is a real failure the user should see, not a silent Idle.
+                    if (status != BluetoothGatt.GATT_SUCCESS) {
+                        listener.onError("Connection failed ($status) — move closer and retry")
+                    } else {
+                        listener.onDisconnected()
+                    }
+                }
             }
         }
 
@@ -435,7 +294,6 @@ class BleManager(private val context: Context, private val listener: Listener) {
         override fun onMtuChanged(g: BluetoothGatt, mtu: Int, status: Int) {
             opDone()
             enqueue { enableNotify(g, Protocol.STATUS) }
-            enqueue { enableNotify(g, Protocol.TOTP_CODE) }
             enqueue { enableNotify(g, Protocol.PW_ENTRY) }
             enqueue { readChar(g, Protocol.DEVICE_INFO) }
         }
@@ -460,30 +318,12 @@ class BleManager(private val context: Context, private val listener: Listener) {
                         main.post { listener.onError("Bad device_info response") }
                     }
                 }
-                Protocol.VAULT_LABELS ->
-                    main.post { listener.onTotpLabels(parseLabels(bytes)) }
-                Protocol.PW_LABELS -> {
-                    // Legacy (firmware < 1.5.0): full list in one read. Deprecated.
-                    val labels = parseLabels(bytes)
-                    main.post { listener.onPwLabels(labels) }
-                }
-                Protocol.PW_LABEL_PAGE -> {
-                    // Paged labels (firmware 1.5.0+): JSON array of up to 20 labels.
-                    val labels = parseLabels(bytes)
-                    main.post { listener.onPwLabelPage(labels) }
-                }
                 Protocol.PW_COUNT -> {
                     val c = if (bytes.size >= 2)
                         (bytes[0].toInt() and 0xFF) or ((bytes[1].toInt() and 0xFF) shl 8)
                     else 0
                     main.post { listener.onPwCount(c) }
                 }
-                Protocol.BLE_AUTO ->
-                    main.post { listener.onBleAuto(parseBleAuto(bytes)) }
-                Protocol.TZ ->
-                    parseTimezone(bytes)?.let { (name, tz) ->
-                        main.post { listener.onTimezone(name, tz) }
-                    }
                 Protocol.VAULT_EXPORT ->
                     main.post { listener.onVaultExport(String(bytes, Charsets.UTF_8)) }
             }
@@ -516,10 +356,6 @@ class BleManager(private val context: Context, private val listener: Listener) {
             when (ch.uuid) {
                 Protocol.STATUS ->
                     main.post { listener.onStatus(text) }
-                Protocol.TOTP_CODE ->
-                    Protocol.parseTotpCode(text)?.let { (label, code, secs) ->
-                        main.post { listener.onTotpCode(label, code, secs) }
-                    }
                 Protocol.PW_ENTRY ->
                     Protocol.parsePwEntry(text)?.let { (label, user, pass) ->
                         main.post { listener.onPwEntry(label, user, pass) }

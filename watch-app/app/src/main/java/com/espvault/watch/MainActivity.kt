@@ -92,8 +92,16 @@ fun WatchApp(vm: WatchViewModel = viewModel()) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val activity = context as? MainActivity
     val granted by (activity?.permsGranted ?: mutableStateOf(true))
-    // Only init BLE once permissions are granted.
-    LaunchedEffect(granted) { if (granted) vm.init(context) }
+    var ready by remember { mutableStateOf(false) }
+    // Init once permissions are granted; the cache loads synchronously here
+    // so the app is usable immediately, with or without the device.
+    LaunchedEffect(granted) {
+        if (granted) {
+            vm.init(context)
+            if (!vm.hasCache.value) vm.requestAutoScan()
+            ready = true
+        }
+    }
     MaterialTheme {
         if (!granted) {
             PermissionGate(
@@ -102,34 +110,47 @@ fun WatchApp(vm: WatchViewModel = viewModel()) {
             )
             return@MaterialTheme
         }
+        if (!ready) {
+            Column(
+                modifier = Modifier.fillMaxSize(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
+            ) { CircularProgressIndicator() }
+            return@MaterialTheme
+        }
         val nav = rememberSwipeDismissableNavController()
         val conn by vm.conn.collectAsState()
+        val hasCache by vm.hasCache.collectAsState()
 
-        // Drive navigation from connection state.
-        LaunchedEffect(conn) {
-            when (conn) {
-                is ConnState.Idle, is ConnState.Scanning,
-                is ConnState.Connecting, is ConnState.Error -> {
-                    if (nav.currentDestination?.route != "connect") nav.navigate("connect")
-                }
-                is ConnState.NeedPin -> {
-                    if (nav.currentDestination?.route != "pin") nav.navigate("pin")
-                }
-                is ConnState.Syncing, is ConnState.Ready -> {
-                    if (nav.currentDestination?.route != "codes" &&
-                        nav.currentDestination?.route != "passwords" &&
-                        nav.currentDestination?.route != "pwdetail"
-                    ) nav.navigate("codes")
-                }
+        // Drive navigation from connection state. Sync progress lives on the
+        // connect screen; everything else is served from the offline cache.
+        LaunchedEffect(conn, hasCache) {
+            val target = when (conn) {
+                is ConnState.NeedPin -> "pin"
+                is ConnState.Idle -> if (hasCache) "codes" else "connect"
+                else -> "connect" // Scanning, Connecting, Syncing, Ready, Error
             }
+            if (nav.currentDestination?.route != target) nav.navigate(target)
         }
 
-        SwipeDismissableNavHost(navController = nav, startDestination = "connect") {
+        SwipeDismissableNavHost(
+            navController = nav,
+            startDestination = if (hasCache) "codes" else "connect"
+        ) {
             composable("connect") { ConnectScreen(vm) }
             composable("pin") { PinScreen(vm) }
-            composable("codes") { CodesScreen(vm, onPasswords = { nav.navigate("passwords") }) }
+            composable("codes") {
+                CodesScreen(
+                    vm,
+                    onPasswords = { nav.navigate("passwords") },
+                    onSync = { vm.requestAutoScan(); nav.navigate("connect") }
+                )
+            }
             composable("passwords") {
-                PasswordsScreen(vm, onSelect = { nav.navigate("pwdetail") })
+                PasswordsScreen(vm, onSelect = { i ->
+                    vm.selectPw(i)
+                    nav.navigate("pwdetail")
+                })
             }
             composable("pwdetail") { PwDetailScreen(vm) }
         }
@@ -139,7 +160,10 @@ fun WatchApp(vm: WatchViewModel = viewModel()) {
 @Composable
 fun ConnectScreen(vm: WatchViewModel) {
     val conn by vm.conn.collectAsState()
-    LaunchedEffect(Unit) { vm.startScan() }
+    val status by vm.status.collectAsState()
+    val hasCache by vm.hasCache.collectAsState()
+    // Auto-scan only when a sync was explicitly requested — not on swipe-back.
+    LaunchedEffect(Unit) { if (vm.consumeAutoScan()) vm.startScan() }
     Column(
         modifier = Modifier.fillMaxSize().padding(8.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -155,16 +179,55 @@ fun ConnectScreen(vm: WatchViewModel) {
                 CircularProgressIndicator(modifier = Modifier.padding(12.dp))
                 Text("Connecting…", textAlign = TextAlign.Center)
             }
+            is ConnState.Syncing -> {
+                CircularProgressIndicator(modifier = Modifier.padding(12.dp))
+                Text(
+                    status.ifEmpty { "Syncing…" },
+                    textAlign = TextAlign.Center
+                )
+            }
+            is ConnState.Ready -> {
+                Text("✓", style = MaterialTheme.typography.title1)
+                Text(
+                    status.ifEmpty { "Synced" },
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(top = 4.dp)
+                )
+            }
             is ConnState.Error -> {
-                Text(c.msg, textAlign = TextAlign.Center)
+                if (c.msg == "No vault found") {
+                    Text("No vault found", textAlign = TextAlign.Center)
+                    Text(
+                        "• Vault's Bluetooth on? Triple-tap its button.",
+                        style = MaterialTheme.typography.caption1,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(top = 8.dp)
+                    )
+                    Text(
+                        "• Phone app not connected to the vault?",
+                        style = MaterialTheme.typography.caption1,
+                        textAlign = TextAlign.Center
+                    )
+                    Text(
+                        "• Watch Bluetooth on?",
+                        style = MaterialTheme.typography.caption1,
+                        textAlign = TextAlign.Center
+                    )
+                } else {
+                    Text(c.msg, textAlign = TextAlign.Center)
+                }
                 Button(onClick = { vm.startScan() }, modifier = Modifier.padding(top = 8.dp)) {
                     Text("Retry")
                 }
             }
             else -> {
-                Text("Tap to scan", textAlign = TextAlign.Center)
+                Text(
+                    if (hasCache) "Cache is ready — sync to refresh it."
+                    else "Sync your vault to get started.",
+                    textAlign = TextAlign.Center
+                )
                 Button(onClick = { vm.startScan() }, modifier = Modifier.padding(top = 8.dp)) {
-                    Text("Scan")
+                    Text(if (hasCache) "Sync now" else "Scan")
                 }
             }
         }
@@ -229,9 +292,13 @@ fun PinScreen(vm: WatchViewModel) {
 }
 
 @Composable
-fun CodesScreen(vm: WatchViewModel, onPasswords: () -> Unit) {
+fun CodesScreen(
+    vm: WatchViewModel,
+    onPasswords: () -> Unit,
+    onSync: () -> Unit
+) {
     val totps by vm.totps.collectAsState()
-    val conn by vm.conn.collectAsState()
+    val lastSync by vm.lastSyncAt.collectAsState()
     // Tick every second to refresh codes + countdown.
     var now by remember { mutableStateOf(System.currentTimeMillis()) }
     LaunchedEffect(Unit) {
@@ -246,26 +313,31 @@ fun CodesScreen(vm: WatchViewModel, onPasswords: () -> Unit) {
         state = rememberScalingLazyListState()
     ) {
         item {
-            Row(
+            Column(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.Center
+                horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Text(
                     "Codes  •  ${secsLeft}s",
                     style = MaterialTheme.typography.caption1,
                     modifier = Modifier.padding(4.dp)
                 )
+                if (lastSync > 0) {
+                    Text(
+                        "Synced ${formatSyncTime(lastSync)}",
+                        style = MaterialTheme.typography.caption2,
+                        modifier = Modifier.padding(bottom = 4.dp)
+                    )
+                }
             }
         }
-        if (conn is ConnState.Syncing && totps.isEmpty()) {
+        if (totps.isEmpty()) {
             item {
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    CircularProgressIndicator()
-                    Text("Syncing…")
-                }
+                Text(
+                    "Nothing synced yet",
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(8.dp)
+                )
             }
         }
         itemsIndexed(totps) { _, entry ->
@@ -291,17 +363,27 @@ fun CodesScreen(vm: WatchViewModel, onPasswords: () -> Unit) {
         }
         item {
             Chip(
-                label = { Text("Disconnect") },
-                onClick = { vm.disconnect() },
+                label = { Text("Sync now") },
+                onClick = onSync,
                 modifier = Modifier.fillMaxWidth()
             )
         }
     }
 }
 
+/** "14:32" if today, "Oct 1" otherwise. */
+fun formatSyncTime(millis: Long): String {
+    val date = java.util.Date(millis)
+    val now = java.util.Date()
+    val sameDay = java.text.SimpleDateFormat("yyyyMMdd", java.util.Locale.getDefault())
+        .format(date) == java.text.SimpleDateFormat("yyyyMMdd", java.util.Locale.getDefault()).format(now)
+    val pattern = if (sameDay) "HH:mm" else "MMM d"
+    return java.text.SimpleDateFormat(pattern, java.util.Locale.getDefault()).format(date)
+}
+
 @Composable
 fun PasswordsScreen(vm: WatchViewModel, onSelect: (Int) -> Unit) {
-    val labels by vm.pwLabels.collectAsState()
+    val entries by vm.pwEntries.collectAsState()
     ScalingLazyColumn(
         modifier = Modifier.fillMaxSize(),
         state = rememberScalingLazyListState()
@@ -314,16 +396,13 @@ fun PasswordsScreen(vm: WatchViewModel, onSelect: (Int) -> Unit) {
                 textAlign = TextAlign.Center
             )
         }
-        if (labels.isEmpty()) {
-            item { Text("No passwords", textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth()) }
+        if (entries.isEmpty()) {
+            item { Text("No passwords synced", textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth()) }
         }
-        itemsIndexed(labels) { i, label ->
+        itemsIndexed(entries) { i, entry ->
             Chip(
-                label = { Text(label) },
-                onClick = {
-                    vm.requestPwDetail(i)
-                    onSelect(i)
-                },
+                label = { Text(entry.label) },
+                onClick = { onSelect(i) },
                 modifier = Modifier.fillMaxWidth()
             )
         }
@@ -332,16 +411,15 @@ fun PasswordsScreen(vm: WatchViewModel, onSelect: (Int) -> Unit) {
 
 @Composable
 fun PwDetailScreen(vm: WatchViewModel) {
-    val detail by vm.pwDetail.collectAsState()
+    // Served straight from the offline cache — no device needed.
+    val d = vm.selectedPw.collectAsState().value
     Column(
         modifier = Modifier.fillMaxSize().padding(12.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
-        val d = detail
         if (d == null) {
-            CircularProgressIndicator()
-            Text("Loading…", modifier = Modifier.padding(top = 8.dp))
+            Text("Nothing selected", textAlign = TextAlign.Center)
         } else {
             Text(d.label, style = MaterialTheme.typography.title3, textAlign = TextAlign.Center)
             if (d.username.isNotEmpty()) {
