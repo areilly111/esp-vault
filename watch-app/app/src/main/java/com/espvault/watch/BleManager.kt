@@ -20,6 +20,7 @@ import android.os.ParcelUuid
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.UUID
+import org.json.JSONObject
 
 /**
  * Native Android BLE layer for the Esp Vault protocol.
@@ -35,14 +36,17 @@ import java.util.UUID
 class BleManager(private val context: Context, private val listener: Listener) {
 
     /**
-     * Read-only listener. The watch only pulls vault data from the device —
-     * it never writes vault entries, settings, or anything else to it.
+     * BLE sync listener. The watch pulls vault data from the device on import
+     * and pushes its cache to the device on export (both auth-gated).
+     * It never touches device settings — the device is an optional vault
+     * peripheral, not something the watch manages.
      * (The auth PIN write is authentication, not vault data.)
      */
     interface Listener {
         fun onDeviceFound(device: BluetoothDevice)
         fun onDeviceInfo(fw: String, locked: Boolean, setup: Boolean)
         fun onPwCount(count: Int)
+        fun onTotpCount(count: Int)
         fun onStatus(text: String)
         fun onPwEntry(label: String, username: String, password: String)
         fun onVaultExport(json: String)
@@ -194,9 +198,9 @@ class BleManager(private val context: Context, private val listener: Listener) {
     fun authenticate(password: String) =
         writeChar(Protocol.AUTH, password.toByteArray(Charsets.UTF_8))
 
-    // ---------------- read-only sync operations ----------------
-    // The watch pulls vault data from the device. It never writes entries,
-    // settings, or anything else to it — these are the only operations used.
+    // ---------------- vault sync operations ----------------
+    // Import: pull vault data from the device. Export: push the watch's
+    // cached vault to the device (delete-all + re-add per entry).
 
     fun readPwCount() {
         val g = gatt ?: return
@@ -205,11 +209,45 @@ class BleManager(private val context: Context, private val listener: Listener) {
 
     fun requestPw(index: Int) = writeChar(Protocol.PW_REQ, u16le(index))
 
+    fun readTotpCount() {
+        val g = gatt ?: return
+        enqueue { readChar(g, Protocol.VAULT_COUNT) }
+    }
+
     // ---- vault export (requires unlock + auth) ----
 
     fun readVaultExport() {
         val g = gatt ?: return
         enqueue { readChar(g, Protocol.VAULT_EXPORT) }
+    }
+
+    // ---- vault import-to-device (requires unlock + auth) ----
+
+    fun writeAddTotp(label: String, secret: String) {
+        val json = JSONObject()
+            .put("label", label)
+            .put("secret", secret)
+            .toString()
+        writeChar(Protocol.ADD_TOTP, json.toByteArray(Charsets.UTF_8))
+    }
+
+    fun writeTotpDelete(index: Int) {
+        val json = JSONObject().put("index", index).toString()
+        writeChar(Protocol.TOTP_DELETE, json.toByteArray(Charsets.UTF_8))
+    }
+
+    fun writePwAdd(label: String, username: String, password: String) {
+        val json = JSONObject()
+            .put("label", label)
+            .put("username", username)
+            .put("password", password)
+            .toString()
+        writeChar(Protocol.PW_ADD, json.toByteArray(Charsets.UTF_8))
+    }
+
+    fun writePwDelete(index: Int) {
+        val json = JSONObject().put("index", index).toString()
+        writeChar(Protocol.PW_DELETE, json.toByteArray(Charsets.UTF_8))
     }
 
     // ---------------- internals ----------------
@@ -323,6 +361,12 @@ class BleManager(private val context: Context, private val listener: Listener) {
                         (bytes[0].toInt() and 0xFF) or ((bytes[1].toInt() and 0xFF) shl 8)
                     else 0
                     main.post { listener.onPwCount(c) }
+                }
+                Protocol.VAULT_COUNT -> {
+                    val c = if (bytes.size >= 2)
+                        (bytes[0].toInt() and 0xFF) or ((bytes[1].toInt() and 0xFF) shl 8)
+                    else 0
+                    main.post { listener.onTotpCount(c) }
                 }
                 Protocol.VAULT_EXPORT ->
                     main.post { listener.onVaultExport(String(bytes, Charsets.UTF_8)) }

@@ -98,7 +98,6 @@ fun WatchApp(vm: WatchViewModel = viewModel()) {
     LaunchedEffect(granted) {
         if (granted) {
             vm.init(context)
-            if (!vm.hasCache.value) vm.requestAutoScan()
             ready = true
         }
     }
@@ -123,11 +122,12 @@ fun WatchApp(vm: WatchViewModel = viewModel()) {
         val hasCache by vm.hasCache.collectAsState()
 
         // Drive navigation from connection state. Sync progress lives on the
-        // connect screen; everything else is served from the offline cache.
+        // device screen; everything else is served from the offline cache.
+        // Bitwarden is the default sync — the device is optional.
         LaunchedEffect(conn, hasCache) {
             val target = when (conn) {
                 is ConnState.NeedPin -> "pin"
-                is ConnState.Idle -> if (hasCache) "codes" else "connect"
+                is ConnState.Idle -> if (hasCache) "codes" else "bwsync"
                 else -> "connect" // Scanning, Connecting, Syncing, Ready, Error
             }
             if (nav.currentDestination?.route != target) nav.navigate(target)
@@ -135,7 +135,7 @@ fun WatchApp(vm: WatchViewModel = viewModel()) {
 
         SwipeDismissableNavHost(
             navController = nav,
-            startDestination = if (hasCache) "codes" else "connect"
+            startDestination = if (hasCache) "codes" else "bwsync"
         ) {
             composable("connect") { ConnectScreen(vm) }
             composable("pin") { PinScreen(vm) }
@@ -143,13 +143,23 @@ fun WatchApp(vm: WatchViewModel = viewModel()) {
                 CodesScreen(
                     vm,
                     onPasswords = { nav.navigate("passwords") },
-                    onSync = { nav.navigate("syncmenu") }
+                    onSync = { nav.navigate("bwsync") },
+                    onSettings = { nav.navigate("settings") }
                 )
             }
-            composable("syncmenu") {
-                SyncMenuScreen(
-                    onBle = { vm.requestAutoScan(); nav.navigate("connect") },
-                    onBw = { nav.navigate("bwsync") }
+            composable("settings") {
+                SettingsScreen(
+                    vm,
+                    onImportDevice = { vm.requestBleJob(BleJob.IMPORT); nav.navigate("connect") },
+                    onExportDevice = { nav.navigate("exportconfirm") },
+                    onBwSetup = { nav.navigate("bwsync") }
+                )
+            }
+            composable("exportconfirm") {
+                ExportConfirmScreen(
+                    vm,
+                    onConfirm = { vm.requestBleJob(BleJob.EXPORT); nav.navigate("connect") },
+                    onCancel = { nav.popBackStack() }
                 )
             }
             composable("bwsync") {
@@ -171,14 +181,15 @@ fun ConnectScreen(vm: WatchViewModel) {
     val conn by vm.conn.collectAsState()
     val status by vm.status.collectAsState()
     val hasCache by vm.hasCache.collectAsState()
-    // Auto-scan only when a sync was explicitly requested — not on swipe-back.
+    val jobTitle = if (vm.currentBleJob == BleJob.EXPORT) "Export to device" else "Import from device"
+    // Auto-scan only when a device job was explicitly requested — not on swipe-back.
     LaunchedEffect(Unit) { if (vm.consumeAutoScan()) vm.startScan() }
     Column(
         modifier = Modifier.fillMaxSize().padding(8.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
-        Text("Esp Vault", style = MaterialTheme.typography.title2)
+        Text(jobTitle, style = MaterialTheme.typography.title2)
         when (val c = conn) {
             is ConnState.Scanning -> {
                 CircularProgressIndicator(modifier = Modifier.padding(12.dp))
@@ -304,7 +315,8 @@ fun PinScreen(vm: WatchViewModel) {
 fun CodesScreen(
     vm: WatchViewModel,
     onPasswords: () -> Unit,
-    onSync: () -> Unit
+    onSync: () -> Unit,
+    onSettings: () -> Unit
 ) {
     val totps by vm.totps.collectAsState()
     val lastSync by vm.lastSyncAt.collectAsState()
@@ -374,6 +386,13 @@ fun CodesScreen(
             Chip(
                 label = { Text("Sync now") },
                 onClick = onSync,
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+        item {
+            Chip(
+                label = { Text("Settings") },
+                onClick = onSettings,
                 modifier = Modifier.fillMaxWidth()
             )
         }
@@ -494,33 +513,120 @@ fun launchTextInput(
 }
 
 @Composable
-fun SyncMenuScreen(onBle: () -> Unit, onBw: () -> Unit) {
+fun SettingsScreen(
+    vm: WatchViewModel,
+    onImportDevice: () -> Unit,
+    onExportDevice: () -> Unit,
+    onBwSetup: () -> Unit
+) {
+    val server by vm.bwServer.collectAsState()
+    val email by vm.bwEmail.collectAsState()
+    val hasBw = server.isNotEmpty() && email.isNotEmpty()
+    ScalingLazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        state = rememberScalingLazyListState()
+    ) {
+        item {
+            Text(
+                "Settings",
+                style = MaterialTheme.typography.title3,
+                modifier = Modifier.fillMaxWidth(),
+                textAlign = TextAlign.Center
+            )
+        }
+        item {
+            Text(
+                "Bitwarden",
+                style = MaterialTheme.typography.caption1,
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                textAlign = TextAlign.Center
+            )
+        }
+        if (hasBw) {
+            item {
+                Text(server, style = MaterialTheme.typography.caption2,
+                    modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center)
+            }
+            item {
+                Text(email, style = MaterialTheme.typography.caption2,
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp),
+                    textAlign = TextAlign.Center)
+            }
+            item {
+                Chip(
+                    label = { Text("Forget server") },
+                    onClick = { vm.clearBwConfig() },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        } else {
+            item {
+                Chip(
+                    label = { Text("Set up Bitwarden sync") },
+                    onClick = onBwSetup,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        }
+        item {
+            Text(
+                "Vault device (optional)",
+                style = MaterialTheme.typography.caption1,
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                textAlign = TextAlign.Center
+            )
+        }
+        item {
+            Chip(
+                label = { Text("Import from device") },
+                onClick = onImportDevice,
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+        item {
+            Chip(
+                label = { Text("Export to device") },
+                onClick = onExportDevice,
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+        item {
+            Text(
+                "The watch works fully offline. The device is just another place to keep a copy.",
+                style = MaterialTheme.typography.caption2,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth().padding(8.dp)
+            )
+        }
+    }
+}
+
+@Composable
+fun ExportConfirmScreen(
+    vm: WatchViewModel,
+    onConfirm: () -> Unit,
+    onCancel: () -> Unit
+) {
+    val totps by vm.totps.collectAsState()
+    val pws by vm.pwEntries.collectAsState()
     Column(
-        modifier = Modifier.fillMaxSize().padding(8.dp),
+        modifier = Modifier.fillMaxSize().padding(12.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
-        Text("Sync from", style = MaterialTheme.typography.title3)
-        Chip(
-            label = {
-                Column {
-                    Text("Vault device")
-                    Text("Bluetooth", style = MaterialTheme.typography.caption2)
-                }
-            },
-            onClick = onBle,
-            modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
+        Text("Export to device?", style = MaterialTheme.typography.title3, textAlign = TextAlign.Center)
+        Text(
+            "This replaces the vault on the device with the watch's copy: ${totps.size} codes, ${pws.size} passwords.",
+            style = MaterialTheme.typography.caption1,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.padding(vertical = 8.dp)
         )
-        Chip(
-            label = {
-                Column {
-                    Text("Bitwarden server")
-                    Text("Wi-Fi", style = MaterialTheme.typography.caption2)
-                }
-            },
-            onClick = onBw,
-            modifier = Modifier.fillMaxWidth().padding(top = 4.dp)
-        )
+        Button(onClick = onConfirm, modifier = Modifier.fillMaxWidth()) {
+            Text("Export")
+        }
+        Button(onClick = onCancel, modifier = Modifier.fillMaxWidth().padding(top = 4.dp)) {
+            Text("Cancel")
+        }
     }
 }
 
@@ -556,8 +662,12 @@ fun BwSyncScreen(vm: WatchViewModel, onDone: () -> Unit) {
         }
     }
 
-    // Fresh state each time the screen opens.
-    LaunchedEffect(Unit) { vm.resetBwState() }
+    // Fresh state each time the screen opens. If the server is already set up,
+    // go straight to the master-password prompt — Bitwarden is the default.
+    LaunchedEffect(Unit) {
+        vm.resetBwState()
+        if (configured) launchTextInput(launcher, "bw_pw", "Master password")
+    }
     // Leave on success after a beat.
     if (bwState is ConnState.Ready) {
         LaunchedEffect(Unit) {
