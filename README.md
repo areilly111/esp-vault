@@ -1,6 +1,6 @@
 # Esp Vault
 
-A TOTP authenticator and password vault that runs on an ESP32-C3. It has a small OLED screen, a single button, and talks to your phone over Bluetooth. No cloud, no accounts, no subscriptions — your secrets stay on the device in your pocket.
+A TOTP authenticator and password vault for the ESP32-C3 SuperMini with 0.42" OLED. It has a small screen, a single button, and talks to your phone over Bluetooth. No cloud, no accounts, no subscriptions — your secrets stay on the device in your pocket.
 
 ## What it does
 
@@ -11,8 +11,9 @@ A TOTP authenticator and password vault that runs on an ESP32-C3. It has a small
 
 ## Hardware
 
-- ESP32-C3 microcontroller
-- 72x40 SSD1306 OLED display (I2C)
+Built for the [ESP32-C3 SuperMini with 0.42" OLED](https://github.com/peff74/ESP32-C3_OLED) — the cheap little board with the 72x40 SSD1306 display built in.
+
+- ESP32-C3 SuperMini + 0.42" 72x40 SSD1306 OLED (SDA GPIO 6, SCL GPIO 5)
 - Push button on GPIO 9
 - LittleFS for storage
 
