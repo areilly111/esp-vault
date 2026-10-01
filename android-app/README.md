@@ -28,3 +28,4 @@ The APK lands at `app/build/outputs/apk/debug/app-debug.apk`.
 - The app talks to the device using the protocol in [../BLE_PROTOCOL.md](../BLE_PROTOCOL.md).
 - Package name is `com.keychainvault.app` (historical — the app itself is branded "Esp Vault").
 - Bitwarden import/export files are plain JSON. Keep your backups somewhere safe.
+- Read the [security disclaimer](../README.md#disclaimer) in the main README before trusting this with anything important.
