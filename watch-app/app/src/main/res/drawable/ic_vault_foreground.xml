@@ -4,15 +4,22 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <!-- keyhole: ring + stem -->
-    <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M54,30 m-14,0 a14,14 0 1,0 28,0 a14,14 0 1,0 -28,0" />
-    <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M48,50 L60,50 L64,78 L44,78 Z" />
-    <!-- punch the dark center out of the ring -->
-    <path
-        android:fillColor="#1B2A3A"
-        android:pathData="M54,30 m-7,0 a7,7 0 1,0 14,0 a7,7 0 1,0 -14,0" />
+    <!-- keyhole, scaled down for comfortable padding inside the icon mask -->
+    <group
+        android:scaleX="0.68"
+        android:scaleY="0.68"
+        android:pivotX="54"
+        android:pivotY="54">
+        <!-- keyhole: ring + stem -->
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M54,30 m-14,0 a14,14 0 1,0 28,0 a14,14 0 1,0 -28,0" />
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M48,50 L60,50 L64,78 L44,78 Z" />
+        <!-- punch the dark center out of the ring -->
+        <path
+            android:fillColor="#1B2A3A"
+            android:pathData="M54,30 m-7,0 a7,7 0 1,0 14,0 a7,7 0 1,0 -14,0" />
+    </group>
 </vector>
