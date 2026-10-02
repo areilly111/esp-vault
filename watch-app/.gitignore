@@ -1,0 +1,8 @@
+# Android build outputs
+build/
+.gradle/
+local.properties
+# Signing key and credentials - NEVER commit. Lose these and sideloaded
+# apps can never be updated in place (signature mismatch).
+keystore/
+keystore.properties

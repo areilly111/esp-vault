@@ -101,10 +101,11 @@ fun WatchApp(vm: WatchViewModel = viewModel()) {
     // Bluetooth is optional now (Bitwarden is the default sync), so the
     // permission gate can be skipped — device features just won't scan.
     var bleSkipped by remember { mutableStateOf(false) }
-    // Init once permissions are granted; the cache loads synchronously here
-    // so the app is usable immediately, with or without the device.
-    LaunchedEffect(granted) {
-        if (granted) {
+    // Init once permissions are granted (or skipped); the cache loads
+    // synchronously here so the app is usable immediately, with or without
+    // the device.
+    LaunchedEffect(granted, bleSkipped) {
+        if (granted || bleSkipped) {
             vm.init(context)
             ready = true
         }
@@ -649,6 +650,12 @@ fun SettingsScreen(
     val server by vm.bwServer.collectAsState()
     val email by vm.bwEmail.collectAsState()
     val hasBw = server.isNotEmpty() && email.isNotEmpty()
+    val hasVaultPin by vm.hasVaultPin.collectAsState()
+    var inputError by remember { mutableStateOf("") }
+    val launcher = rememberRemoteInputLauncher { key, text ->
+        inputError = ""
+        if (key == "vault_pin" && text.isNotEmpty()) vm.setVaultPin(text)
+    }
     ScalingLazyColumn(
         modifier = Modifier.fillMaxSize(),
         state = rememberScalingLazyListState()
@@ -702,6 +709,38 @@ fun SettingsScreen(
                 modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
                 textAlign = TextAlign.Center
             )
+        }
+        if (inputError.isNotEmpty()) {
+            item {
+                Text(inputError, style = MaterialTheme.typography.caption2,
+                    textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
+            }
+        }
+        item {
+            if (hasVaultPin) {
+                Text(
+                    "Vault PIN saved on this watch — never shown. Used automatically.",
+                    style = MaterialTheme.typography.caption2,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp)
+                )
+            }
+            Chip(
+                label = { Text(if (hasVaultPin) "Change vault PIN" else "Set vault PIN") },
+                onClick = {
+                    launchTextInput(launcher, "vault_pin", "Vault PIN") { inputError = it }
+                },
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+        if (hasVaultPin) {
+            item {
+                Chip(
+                    label = { Text("Forget vault PIN") },
+                    onClick = { vm.clearVaultPin() },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
         }
         item {
             Chip(

@@ -87,6 +87,13 @@ class WatchViewModel : ViewModel(), BleManager.Listener {
     private val _bwHasSavedPw = MutableStateFlow(false)
     val bwHasSavedPw: StateFlow<Boolean> = _bwHasSavedPw
 
+    // Remembered vault PIN (ESP32 portal password for BLE auth). Same deal:
+    // saved in private prefs, never displayed, used automatically when the
+    // device asks for it. Falls back to manual entry if it gets rejected.
+    private val _hasVaultPin = MutableStateFlow(false)
+    val hasVaultPin: StateFlow<Boolean> = _hasVaultPin
+    private var usedSavedPin = false
+
     private var bwJob: Job? = null
 
     // ---- sync accumulation ----
@@ -120,6 +127,7 @@ class WatchViewModel : ViewModel(), BleManager.Listener {
         _bwServer.value = prefs.getString("server", "").orEmpty()
         _bwEmail.value = prefs.getString("email", "").orEmpty()
         _bwHasSavedPw.value = prefs.getString("master_pw", null) != null
+        _hasVaultPin.value = prefs.getString("vault_pin", null) != null
     }
 
     fun startScan() {
@@ -136,6 +144,7 @@ class WatchViewModel : ViewModel(), BleManager.Listener {
     }
 
     fun authenticate(pin: String) {
+        usedSavedPin = false
         _conn.value = ConnState.Syncing
         _status.value = "Unlocking…"
         armWatchdog()
@@ -177,6 +186,25 @@ class WatchViewModel : ViewModel(), BleManager.Listener {
         ctx.getSharedPreferences("bw", Context.MODE_PRIVATE).edit().remove("master_pw").apply()
         _bwHasSavedPw.value = false
         _bwState.value = ConnState.Idle
+    }
+
+    // ---- vault PIN (ESP32 BLE auth) ----
+
+    fun setVaultPin(pin: String) {
+        val ctx = appContext ?: return
+        ctx.getSharedPreferences("bw", Context.MODE_PRIVATE).edit().putString("vault_pin", pin).apply()
+        _hasVaultPin.value = true
+    }
+
+    fun clearVaultPin() {
+        val ctx = appContext ?: return
+        ctx.getSharedPreferences("bw", Context.MODE_PRIVATE).edit().remove("vault_pin").apply()
+        _hasVaultPin.value = false
+    }
+
+    private fun savedVaultPin(): String? {
+        val ctx = appContext ?: return null
+        return ctx.getSharedPreferences("bw", Context.MODE_PRIVATE).getString("vault_pin", null)
     }
 
     // ---- Bitwarden setup wizard (one visible step at a time) ----
@@ -330,6 +358,7 @@ class WatchViewModel : ViewModel(), BleManager.Listener {
     }
 
     private fun exportStepOnDeleted() {
+        armWatchdog() // large vaults take a while; don't time out mid-export
         when (exportPhase) {
             ExportPhase.DEL_TOTP -> {
                 exportDelRemaining--
@@ -383,6 +412,7 @@ class WatchViewModel : ViewModel(), BleManager.Listener {
     }
 
     private fun exportStepOnAdded() {
+        armWatchdog() // large vaults take a while; don't time out mid-export
         when (exportPhase) {
             ExportPhase.ADD_TOTP -> {
                 exportAddIndex++
@@ -442,10 +472,26 @@ class WatchViewModel : ViewModel(), BleManager.Listener {
     }
 
     override fun onDeviceInfo(fw: String, locked: Boolean, setup: Boolean) {
-        if (locked) {
+        val pin = savedVaultPin()
+        if (pin != null) {
+            // Always authenticate when we have a PIN — the firmware gates
+            // vault reads/writes on auth even when unlocked.
+            usedSavedPin = true
+            _conn.value = ConnState.Syncing
+            _status.value = "Unlocking…"
+            armWatchdog()
+            ble.authenticate(pin)
+        } else if (locked) {
             syncWatchdog?.cancel()
             _conn.value = ConnState.NeedPin
+        } else if (bleJob == BleJob.EXPORT) {
+            // Export can't probe auth with a harmless read — ask up front.
+            syncWatchdog?.cancel()
+            _conn.value = ConnState.NeedPin
+            _status.value = "Enter vault PIN"
         } else {
+            // Import: the export read returns blank when unauthed, which
+            // falls back to the PIN screen.
             beginBleJob()
         }
     }
@@ -519,6 +565,7 @@ class WatchViewModel : ViewModel(), BleManager.Listener {
     }
 
     override fun onPwEntry(label: String, username: String, password: String) {
+        armWatchdog() // large vaults take a while; don't time out mid-import
         pwAccum.add(PwEntry(label, username, password))
         _status.value = "Passwords ${pwAccum.size}/$pwTotal…"
         if (pwAccum.size >= pwTotal) {
@@ -545,7 +592,15 @@ class WatchViewModel : ViewModel(), BleManager.Listener {
             text == "ERR AUTH" -> {
                 syncWatchdog?.cancel()
                 exportPhase = ExportPhase.IDLE
-                _conn.value = ConnState.Error("Wrong PIN — try again")
+                if (usedSavedPin) {
+                    // The saved PIN was rejected — fall back to manual entry
+                    // instead of erroring out.
+                    usedSavedPin = false
+                    _status.value = "Saved PIN didn't work"
+                    _conn.value = ConnState.NeedPin
+                } else {
+                    _conn.value = ConnState.Error("Wrong PIN — try again")
+                }
             }
             text == "ERR LOCKED" -> {
                 failBleJob("Device is locked — triple-tap its button")
@@ -559,6 +614,7 @@ class WatchViewModel : ViewModel(), BleManager.Listener {
     override fun onDisconnected() {
         syncWatchdog?.cancel()
         exportPhase = ExportPhase.IDLE
+        usedSavedPin = false
         _conn.value = ConnState.Idle
     }
 

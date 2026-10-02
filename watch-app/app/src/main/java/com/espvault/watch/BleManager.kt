@@ -117,39 +117,40 @@ class BleManager(private val context: Context, private val listener: Listener) {
 
     fun startScan(adapter: BluetoothAdapter) {
         stopScan()
-        val sc = adapter.bluetoothLeScanner
-        if (sc == null) {
-            main.post { listener.onError("BLE scanner unavailable — is Bluetooth on?") }
-            return
-        }
-        val filter = ScanFilter.Builder()
-            .setServiceUuid(ParcelUuid(Protocol.SVC))
-            .build()
-        val settings = ScanSettings.Builder()
-            .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
-            .build()
-        val cb = object : ScanCallback() {
-            override fun onScanResult(callbackType: Int, result: ScanResult) {
-                // Service-UUID filter already guarantees this is our vault device;
-                // accept it even if the advertised name is hidden (neverForLocation).
-                val name = try { result.device?.name } catch (_: SecurityException) { null }
-                if (name == null || name == Protocol.DEVICE_NAME) {
-                    stopScan()
-                    main.post { listener.onDeviceFound(result.device) }
+        try {
+            val sc = adapter.bluetoothLeScanner
+            if (sc == null) {
+                main.post { listener.onError("BLE scanner unavailable — is Bluetooth on?") }
+                return
+            }
+            val filter = ScanFilter.Builder()
+                .setServiceUuid(ParcelUuid(Protocol.SVC))
+                .build()
+            val settings = ScanSettings.Builder()
+                .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+                .build()
+            val cb = object : ScanCallback() {
+                override fun onScanResult(callbackType: Int, result: ScanResult) {
+                    // Service-UUID filter already guarantees this is our vault device;
+                    // accept it even if the advertised name is hidden (neverForLocation).
+                    val name = try { result.device?.name } catch (_: SecurityException) { null }
+                    if (name == null || name == Protocol.DEVICE_NAME) {
+                        stopScan()
+                        main.post { listener.onDeviceFound(result.device) }
+                    }
+                }
+
+                override fun onScanFailed(errorCode: Int) {
+                    main.post { listener.onError("Scan failed ($errorCode)") }
                 }
             }
-
-            override fun onScanFailed(errorCode: Int) {
-                main.post { listener.onError("Scan failed ($errorCode)") }
-            }
-        }
-        scanner = sc
-        scanCb = cb
-        scanning = true
-        main.postDelayed(scanTimeout, 15_000)
-        try {
+            scanner = sc
+            scanCb = cb
+            scanning = true
+            main.postDelayed(scanTimeout, 15_000)
             sc.startScan(listOf(filter), settings, cb)
         } catch (e: Exception) {
+            // e.g. SecurityException when Bluetooth permission was skipped.
             scanning = false
             main.removeCallbacks(scanTimeout)
             main.post { listener.onError("Could not start scan: ${e.message}") }

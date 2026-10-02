@@ -11,15 +11,36 @@ android {
         applicationId "com.espvault.watch"
         minSdk 30
         targetSdk 34
-        versionCode 4
-        versionName "1.5.2"
+        versionCode 5
+        versionName "1.5.3"
+    }
+
+    // All APKs are signed with the persistent keystore in keystore/ (see
+    // keystore.properties, git-ignored). The Gradle debug keystore lives in
+    // /root/.android and is wiped on VM replacement, which caused
+    // INSTALL_FAILED_UPDATE_INCOMPATIBLE ("signatures do not match") —
+    // never go back to it.
+    def keystorePropsFile = rootProject.file("keystore.properties")
+    def keystoreProps = new Properties()
+    if (keystorePropsFile.exists()) {
+        keystoreProps.load(new FileInputStream(keystorePropsFile))
+    }
+    signingConfigs {
+        vault {
+            storeFile rootProject.file(keystoreProps['storeFile'] ?: "keystore/espvault-watch.keystore")
+            storePassword keystoreProps['storePassword']
+            keyAlias keystoreProps['keyAlias'] ?: "espvault-watch"
+            keyPassword keystoreProps['keyPassword']
+        }
     }
 
     buildTypes {
         debug {
+            signingConfig signingConfigs.vault
         }
         release {
             minifyEnabled false
+            signingConfig signingConfigs.vault
         }
     }
     compileOptions {
