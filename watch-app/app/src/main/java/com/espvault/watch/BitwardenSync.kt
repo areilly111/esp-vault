@@ -13,9 +13,7 @@ import java.security.MessageDigest
 import java.util.Base64
 import javax.crypto.Cipher
 import javax.crypto.Mac
-import javax.crypto.SecretKeyFactory
 import javax.crypto.spec.IvParameterSpec
-import javax.crypto.spec.PBEKeySpec
 import javax.crypto.spec.SecretKeySpec
 
 /**
@@ -242,32 +240,54 @@ object BitwardenSync {
             gen.generateBytes(password.toCharArray(), out)
             out
         } else {
-            // PBKDF2-HMAC-SHA256
-            val spec = PBEKeySpec(
-                password.toCharArray(),
+            // PBKDF2-HMAC-SHA256, manual for byte-exactness (see above).
+            pbkdf2Sha256(
+                password.toByteArray(StandardCharsets.UTF_8),
                 email.trim().lowercase().toByteArray(StandardCharsets.UTF_8),
                 kdf.iterations,
-                256
+                32
             )
-            try {
-                SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec).encoded
-            } finally {
-                spec.clearPassword()
-            }
         }
     }
 
-    /** Bitwarden's "master password hash": PBKDF2(masterKey, password, 1). */
+    /** Bitwarden's "master password hash": PBKDF2-HMAC-SHA256(masterKey, password, 1). */
     private fun masterPasswordHash(masterKey: ByteArray, password: String): ByteArray {
-        // PBEKeySpec wants chars; Latin-1 maps bytes 1:1.
-        val keyChars = String(masterKey, StandardCharsets.ISO_8859_1).toCharArray()
-        val spec = PBEKeySpec(keyChars, password.toByteArray(StandardCharsets.UTF_8), 1, 256)
-        return try {
-            SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec).encoded
-        } finally {
-            spec.clearPassword()
-            keyChars.fill('\u0000')
+        // Done manually: JCE's PBEKeySpec takes chars, and pushing raw key
+        // bytes through chars corrupts bytes >= 0x80 (verified) — the server
+        // then rejects every login as "wrong password".
+        return pbkdf2Sha256(masterKey, password.toByteArray(StandardCharsets.UTF_8), 1, 32)
+    }
+
+    /**
+     * PBKDF2-HMAC-SHA256 over raw bytes. Bitwarden feeds raw key bytes here,
+     * which JCE's char-based PBEKeySpec cannot represent exactly.
+     */
+    private fun pbkdf2Sha256(
+        password: ByteArray,
+        salt: ByteArray,
+        iterations: Int,
+        dkLen: Int
+    ): ByteArray {
+        val hLen = 32
+        val blocks = (dkLen + hLen - 1) / hLen
+        val out = ByteArray(blocks * hLen)
+        val intBuf = ByteArray(4)
+        for (i in 1..blocks) {
+            intBuf[0] = (i ushr 24).toByte()
+            intBuf[1] = (i ushr 16).toByte()
+            intBuf[2] = (i ushr 8).toByte()
+            intBuf[3] = i.toByte()
+            var u = hmacSha256(password, salt.copyOf(salt.size + 4).also {
+                intBuf.copyInto(it, salt.size)
+            })
+            val t = u.copyOf()
+            for (j in 1 until iterations) {
+                u = hmacSha256(password, u)
+                for (k in t.indices) t[k] = (t[k].toInt() xor u[k].toInt()).toByte()
+            }
+            t.copyInto(out, (i - 1) * hLen)
         }
+        return out.copyOf(dkLen)
     }
 
     /** HKDF-Expand(SHA256), 32 bytes — how Bitwarden stretches the master key. */
