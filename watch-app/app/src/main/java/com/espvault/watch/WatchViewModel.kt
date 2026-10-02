@@ -111,6 +111,11 @@ class WatchViewModel : ViewModel(), BleManager.Listener {
     private var exportPhase = ExportPhase.IDLE
     private var exportDelRemaining = 0
     private var exportAddIndex = 0
+    // Deduped copy of the cache used for the device (firmware labels must
+    // be unique; Bitwarden names needn't be).
+    private var exportTotps: List<TotpEntry> = emptyList()
+    private var exportRenamed = 0
+    private var exportInFlightLabel = ""
 
     fun init(context: Context) {
         if (appContext != null) return
@@ -352,9 +357,32 @@ class WatchViewModel : ViewModel(), BleManager.Listener {
         exportPhase = ExportPhase.DEL_TOTP
         exportDelRemaining = 0
         exportAddIndex = 0
+        exportTotps = dedupeLabels(_totps.value)
+        exportInFlightLabel = ""
         _status.value = "Reading device…"
         armWatchdog()
         ble.readTotpCount()
+    }
+
+    /**
+     * The firmware requires unique normalized labels, but Bitwarden allows
+     * duplicate names ("Bank" and "BANK" collide after normalization).
+     * Rename collisions to LABEL_2, LABEL_3… so nothing is lost on the device.
+     */
+    private fun dedupeLabels(entries: List<TotpEntry>): List<TotpEntry> {
+        val seen = mutableSetOf<String>()
+        exportRenamed = 0
+        return entries.map { e ->
+            var label = Protocol.normalizeLabel(e.label).ifEmpty { "CODE" }
+            val base = label
+            var n = 2
+            while (!seen.add(label)) {
+                label = "${base}_$n"
+                n++
+            }
+            if (label != Protocol.normalizeLabel(e.label)) exportRenamed++
+            e.copy(label = label)
+        }
     }
 
     private fun exportStepOnDeleted() {
@@ -387,7 +415,7 @@ class WatchViewModel : ViewModel(), BleManager.Listener {
     }
 
     private fun exportNextTotpAdd() {
-        val list = _totps.value
+        val list = exportTotps
         if (exportAddIndex >= list.size) {
             // Codes done — move to passwords.
             exportPhase = ExportPhase.DEL_PW
@@ -396,6 +424,7 @@ class WatchViewModel : ViewModel(), BleManager.Listener {
             return
         }
         val e = list[exportAddIndex]
+        exportInFlightLabel = e.label
         _status.value = "Codes ${exportAddIndex + 1}/${list.size}…"
         ble.writeAddTotp(e.label, e.secret)
     }
@@ -407,6 +436,7 @@ class WatchViewModel : ViewModel(), BleManager.Listener {
             return
         }
         val e = list[exportAddIndex]
+        exportInFlightLabel = e.label
         _status.value = "Passwords ${exportAddIndex + 1}/${list.size}…"
         ble.writePwAdd(e.label, e.username, e.password)
     }
@@ -429,7 +459,9 @@ class WatchViewModel : ViewModel(), BleManager.Listener {
     private fun finishExport() {
         syncWatchdog?.cancel()
         exportPhase = ExportPhase.IDLE
-        _status.value = "Exported ✓"
+        _status.value =
+            if (exportRenamed > 0) "Exported ✓ ($exportRenamed renamed)"
+            else "Exported ✓"
         _conn.value = ConnState.Ready
         viewModelScope.launch {
             delay(1500)
@@ -606,8 +638,22 @@ class WatchViewModel : ViewModel(), BleManager.Listener {
                 failBleJob("Device is locked — triple-tap its button")
             }
             text.startsWith("ERR") -> {
-                failBleJob(text)
+                failBleJob(friendlyBleError(text))
             }
+        }
+    }
+
+    /** Turns firmware error codes into something a human can act on. */
+    private fun friendlyBleError(text: String): String {
+        val label = exportInFlightLabel.ifEmpty { "entry" }
+        return when {
+            text.startsWith("ERR DUP") -> "Duplicate label: $label"
+            text.startsWith("ERR SECRET") -> "Bad code secret: $label"
+            text.startsWith("ERR LABEL") -> "Bad label: $label"
+            text.startsWith("ERR INDEX") -> "Device list changed — retry"
+            text.startsWith("ERR SAVE") -> "Device couldn't save — retry"
+            text.startsWith("ERR JSON") -> "Couldn't send: $label"
+            else -> text
         }
     }
 
