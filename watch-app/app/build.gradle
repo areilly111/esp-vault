@@ -43,6 +43,14 @@ android {
             signingConfig signingConfigs.vault
         }
     }
+
+    // Versioned file names, e.g. EspVault-Watch-1.5.4.apk — the version in
+    // the name is the only way to tell sideloaded builds apart.
+    applicationVariants.all { variant ->
+        variant.outputs.all { output ->
+            output.outputFileName = "EspVault-Watch-${variant.versionName}.apk"
+        }
+    }
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
