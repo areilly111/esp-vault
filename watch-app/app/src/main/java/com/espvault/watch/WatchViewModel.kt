@@ -27,9 +27,6 @@ sealed class ConnState {
     data class Error(val msg: String) : ConnState()
 }
 
-/** What a BLE session is for. The device is optional; Bitwarden is the default. */
-enum class BleJob { IMPORT, EXPORT }
-
 /**
  * Offline-first ViewModel. Everything the user sees comes from the local
  * [VaultCache]; the ESP32 is only contacted to refresh that cache.
@@ -102,20 +99,9 @@ class WatchViewModel : ViewModel(), BleManager.Listener {
     private var pwTotal = 0
     private var syncWatchdog: Job? = null
 
-    // ---- BLE device job (optional peripheral) ----
-    private var bleJob = BleJob.IMPORT
-    val currentBleJob: BleJob get() = bleJob
-
-    // Export state machine (driven by OK ADDED / OK DELETED on status).
-    private enum class ExportPhase { IDLE, DEL_TOTP, ADD_TOTP, DEL_PW, ADD_PW }
-    private var exportPhase = ExportPhase.IDLE
-    private var exportDelRemaining = 0
-    private var exportAddIndex = 0
-    // Deduped copy of the cache used for the device (firmware labels must
-    // be unique; Bitwarden names needn't be).
-    private var exportTotps: List<TotpEntry> = emptyList()
-    private var exportRenamed = 0
-    private var exportInFlightLabel = ""
+    // ---- BLE device import (optional peripheral) ----
+    // The device is a read-only vault source: the watch pulls everything and
+    // disconnects. It never writes vault data back.
 
     fun init(context: Context) {
         if (appContext != null) return
@@ -309,13 +295,12 @@ class WatchViewModel : ViewModel(), BleManager.Listener {
     }
 
     // ---- auto-scan handoff ----
-    // The device screen auto-scans only when a device job (import/export)
-    // was explicitly requested from Settings — not on swipe-back.
+    // The device screen auto-scans only when an import was explicitly
+    // requested from Settings — not on swipe-back.
     private var autoScanPending = false
 
-    /** Ask for a BLE device job; the device screen picks it up and scans. */
-    fun requestBleJob(job: BleJob) {
-        bleJob = job
+    /** Ask for a BLE device import; the device screen picks it up and scans. */
+    fun requestDeviceImport() {
         autoScanPending = true
     }
 
@@ -348,130 +333,8 @@ class WatchViewModel : ViewModel(), BleManager.Listener {
         ble.readVaultExport()
     }
 
-    // ---- export to device ----
-    // Replaces the device's vault with the watch's cache: delete-all, then
-    // re-add every cached entry. Sequenced by OK DELETED / OK ADDED on status.
-
-    private fun startExport() {
-        _conn.value = ConnState.Syncing
-        exportPhase = ExportPhase.DEL_TOTP
-        exportDelRemaining = 0
-        exportAddIndex = 0
-        exportTotps = dedupeLabels(_totps.value)
-        exportInFlightLabel = ""
-        _status.value = "Reading device…"
-        armWatchdog()
-        ble.readTotpCount()
-    }
-
-    /**
-     * The firmware requires unique normalized labels, but Bitwarden allows
-     * duplicate names ("Bank" and "BANK" collide after normalization).
-     * Rename collisions to LABEL_2, LABEL_3… so nothing is lost on the device.
-     */
-    private fun dedupeLabels(entries: List<TotpEntry>): List<TotpEntry> {
-        val seen = mutableSetOf<String>()
-        exportRenamed = 0
-        return entries.map { e ->
-            var label = Protocol.normalizeLabel(e.label).ifEmpty { "CODE" }
-            val base = label
-            var n = 2
-            while (!seen.add(label)) {
-                label = "${base}_$n"
-                n++
-            }
-            if (label != Protocol.normalizeLabel(e.label)) exportRenamed++
-            e.copy(label = label)
-        }
-    }
-
-    private fun exportStepOnDeleted() {
-        armWatchdog() // large vaults take a while; don't time out mid-export
-        when (exportPhase) {
-            ExportPhase.DEL_TOTP -> {
-                exportDelRemaining--
-                if (exportDelRemaining > 0) {
-                    _status.value = "Clearing codes…"
-                    ble.writeTotpDelete(0)
-                } else {
-                    exportPhase = ExportPhase.ADD_TOTP
-                    exportAddIndex = 0
-                    exportNextTotpAdd()
-                }
-            }
-            ExportPhase.DEL_PW -> {
-                exportDelRemaining--
-                if (exportDelRemaining > 0) {
-                    _status.value = "Clearing passwords…"
-                    ble.writePwDelete(0)
-                } else {
-                    exportPhase = ExportPhase.ADD_PW
-                    exportAddIndex = 0
-                    exportNextPwAdd()
-                }
-            }
-            else -> Unit
-        }
-    }
-
-    private fun exportNextTotpAdd() {
-        val list = exportTotps
-        if (exportAddIndex >= list.size) {
-            // Codes done — move to passwords.
-            exportPhase = ExportPhase.DEL_PW
-            _status.value = "Reading passwords…"
-            ble.readPwCount()
-            return
-        }
-        val e = list[exportAddIndex]
-        exportInFlightLabel = e.label
-        _status.value = "Codes ${exportAddIndex + 1}/${list.size}…"
-        ble.writeAddTotp(e.label, e.secret)
-    }
-
-    private fun exportNextPwAdd() {
-        val list = _pwEntries.value
-        if (exportAddIndex >= list.size) {
-            finishExport()
-            return
-        }
-        val e = list[exportAddIndex]
-        exportInFlightLabel = e.label
-        _status.value = "Passwords ${exportAddIndex + 1}/${list.size}…"
-        ble.writePwAdd(e.label, e.username, e.password)
-    }
-
-    private fun exportStepOnAdded() {
-        armWatchdog() // large vaults take a while; don't time out mid-export
-        when (exportPhase) {
-            ExportPhase.ADD_TOTP -> {
-                exportAddIndex++
-                exportNextTotpAdd()
-            }
-            ExportPhase.ADD_PW -> {
-                exportAddIndex++
-                exportNextPwAdd()
-            }
-            else -> Unit
-        }
-    }
-
-    private fun finishExport() {
+    private fun failSync(msg: String) {
         syncWatchdog?.cancel()
-        exportPhase = ExportPhase.IDLE
-        _status.value =
-            if (exportRenamed > 0) "Exported ✓ ($exportRenamed renamed)"
-            else "Exported ✓"
-        _conn.value = ConnState.Ready
-        viewModelScope.launch {
-            delay(1500)
-            ble.disconnect()
-        }
-    }
-
-    private fun failBleJob(msg: String) {
-        syncWatchdog?.cancel()
-        exportPhase = ExportPhase.IDLE
         _conn.value = ConnState.Error(msg)
     }
 
@@ -516,21 +379,11 @@ class WatchViewModel : ViewModel(), BleManager.Listener {
         } else if (locked) {
             syncWatchdog?.cancel()
             _conn.value = ConnState.NeedPin
-        } else if (bleJob == BleJob.EXPORT) {
-            // Export can't probe auth with a harmless read — ask up front.
-            syncWatchdog?.cancel()
-            _conn.value = ConnState.NeedPin
-            _status.value = "Enter vault PIN"
         } else {
             // Import: the export read returns blank when unauthed, which
             // falls back to the PIN screen.
-            beginBleJob()
+            syncVault()
         }
-    }
-
-    /** Dispatches to import or export once the device is unlocked. */
-    private fun beginBleJob() {
-        if (bleJob == BleJob.EXPORT) startExport() else syncVault()
     }
 
     override fun onVaultExport(json: String) {
@@ -555,38 +408,11 @@ class WatchViewModel : ViewModel(), BleManager.Listener {
             _status.value = "Syncing passwords…"
             ble.readPwCount()
         } catch (_: Exception) {
-            failBleJob("Couldn't parse vault data — retry")
-        }
-    }
-
-    override fun onTotpCount(count: Int) {
-        // Only used by export: clear the device's codes before re-adding.
-        if (exportPhase != ExportPhase.DEL_TOTP) return
-        if (count <= 0) {
-            exportPhase = ExportPhase.ADD_TOTP
-            exportAddIndex = 0
-            exportNextTotpAdd()
-        } else {
-            exportDelRemaining = count
-            _status.value = "Clearing codes…"
-            ble.writeTotpDelete(0)
+            failSync("Couldn't parse vault data — retry")
         }
     }
 
     override fun onPwCount(count: Int) {
-        if (exportPhase == ExportPhase.DEL_PW) {
-            // Export: clear the device's passwords before re-adding.
-            if (count <= 0) {
-                exportPhase = ExportPhase.ADD_PW
-                exportAddIndex = 0
-                exportNextPwAdd()
-            } else {
-                exportDelRemaining = count
-                _status.value = "Clearing passwords…"
-                ble.writePwDelete(0)
-            }
-            return
-        }
         pwTotal = count
         if (count <= 0) {
             finishSync()
@@ -608,22 +434,11 @@ class WatchViewModel : ViewModel(), BleManager.Listener {
     }
 
     override fun onStatus(text: String) {
-        // Auth + export sequencing arrives here.
+        // Auth result arrives here.
         when {
-            text == "OK AUTH" -> beginBleJob()
-            text == "OK ADDED" -> {
-                if (exportPhase == ExportPhase.ADD_TOTP || exportPhase == ExportPhase.ADD_PW) {
-                    exportStepOnAdded()
-                }
-            }
-            text == "OK DELETED" -> {
-                if (exportPhase == ExportPhase.DEL_TOTP || exportPhase == ExportPhase.DEL_PW) {
-                    exportStepOnDeleted()
-                }
-            }
+            text == "OK AUTH" -> syncVault()
             text == "ERR AUTH" -> {
                 syncWatchdog?.cancel()
-                exportPhase = ExportPhase.IDLE
                 if (usedSavedPin) {
                     // The saved PIN was rejected — fall back to manual entry
                     // instead of erroring out.
@@ -635,36 +450,21 @@ class WatchViewModel : ViewModel(), BleManager.Listener {
                 }
             }
             text == "ERR LOCKED" -> {
-                failBleJob("Device is locked — triple-tap its button")
+                failSync("Device is locked — triple-tap its button")
             }
             text.startsWith("ERR") -> {
-                failBleJob(friendlyBleError(text))
+                failSync(text)
             }
-        }
-    }
-
-    /** Turns firmware error codes into something a human can act on. */
-    private fun friendlyBleError(text: String): String {
-        val label = exportInFlightLabel.ifEmpty { "entry" }
-        return when {
-            text.startsWith("ERR DUP") -> "Duplicate label: $label"
-            text.startsWith("ERR SECRET") -> "Bad code secret: $label"
-            text.startsWith("ERR LABEL") -> "Bad label: $label"
-            text.startsWith("ERR INDEX") -> "Device list changed — retry"
-            text.startsWith("ERR SAVE") -> "Device couldn't save — retry"
-            text.startsWith("ERR JSON") -> "Couldn't send: $label"
-            else -> text
         }
     }
 
     override fun onDisconnected() {
         syncWatchdog?.cancel()
-        exportPhase = ExportPhase.IDLE
         usedSavedPin = false
         _conn.value = ConnState.Idle
     }
 
     override fun onError(text: String) {
-        failBleJob(text)
+        failSync(text)
     }
 }

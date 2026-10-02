@@ -77,13 +77,6 @@ object Protocol {
         return parts[0] > 1 || (parts[0] == 1 && (parts[1] > 4 || (parts[1] == 4 && parts[2] >= 6)))
     }
 
-    /** True if the firmware version supports vault export over BLE (1.4.7+). */
-    fun supportsExport(fw: String): Boolean {
-        val parts = fw.split(".").mapNotNull { it.toIntOrNull() }
-        if (parts.size < 3) return false
-        return parts[0] > 1 || (parts[0] == 1 && (parts[1] > 4 || (parts[1] == 4 && parts[2] >= 7)))
-    }
-
     /** True if the firmware version supports paged password labels (1.5.0+). */
     fun supportsPagedPwLabels(fw: String): Boolean {
         val parts = fw.split(".").mapNotNull { it.toIntOrNull() }

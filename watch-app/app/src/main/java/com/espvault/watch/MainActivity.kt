@@ -162,16 +162,8 @@ fun WatchApp(vm: WatchViewModel = viewModel()) {
             composable("settings") {
                 SettingsScreen(
                     vm,
-                    onImportDevice = { vm.requestBleJob(BleJob.IMPORT); nav.navigate("connect") },
-                    onExportDevice = { nav.navigate("exportconfirm") },
+                    onImportDevice = { vm.requestDeviceImport(); nav.navigate("connect") },
                     onBwSetup = { nav.navigate("bwsync") }
-                )
-            }
-            composable("exportconfirm") {
-                ExportConfirmScreen(
-                    vm,
-                    onConfirm = { vm.requestBleJob(BleJob.EXPORT); nav.navigate("connect") },
-                    onCancel = { nav.popBackStack() }
                 )
             }
             composable("bwsync") {
@@ -193,7 +185,7 @@ fun ConnectScreen(vm: WatchViewModel) {
     val conn by vm.conn.collectAsState()
     val status by vm.status.collectAsState()
     val hasCache by vm.hasCache.collectAsState()
-    val jobTitle = if (vm.currentBleJob == BleJob.EXPORT) "Export to device" else "Import from device"
+    val jobTitle = "Import from device"
     // Auto-scan only when a device job was explicitly requested — not on swipe-back.
     LaunchedEffect(Unit) { if (vm.consumeAutoScan()) vm.startScan() }
     Column(
@@ -644,7 +636,6 @@ fun launchTextInput(
 fun SettingsScreen(
     vm: WatchViewModel,
     onImportDevice: () -> Unit,
-    onExportDevice: () -> Unit,
     onBwSetup: () -> Unit
 ) {
     val server by vm.bwServer.collectAsState()
@@ -750,51 +741,12 @@ fun SettingsScreen(
             )
         }
         item {
-            Chip(
-                label = { Text("Export to device") },
-                onClick = onExportDevice,
-                modifier = Modifier.fillMaxWidth()
-            )
-        }
-        item {
             Text(
-                "The watch works fully offline. The device is just another place to keep a copy.",
+                "The watch works fully offline. The device is just another place to pull a copy from.",
                 style = MaterialTheme.typography.caption2,
                 textAlign = TextAlign.Center,
                 modifier = Modifier.fillMaxWidth().padding(8.dp)
             )
-        }
-    }
-}
-
-@Composable
-fun ExportConfirmScreen(
-    vm: WatchViewModel,
-    onConfirm: () -> Unit,
-    onCancel: () -> Unit
-) {
-    val totps by vm.totps.collectAsState()
-    val pws by vm.pwEntries.collectAsState()
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(12.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-    ) {
-        Text("Export to device?", style = MaterialTheme.typography.title3, textAlign = TextAlign.Center)
-        Text(
-            "This replaces the vault on the device with the watch's copy: ${totps.size} codes, ${pws.size} passwords.",
-            style = MaterialTheme.typography.caption1,
-            textAlign = TextAlign.Center,
-            modifier = Modifier.padding(vertical = 8.dp)
-        )
-        Button(onClick = onConfirm, modifier = Modifier.fillMaxWidth()) {
-            Text("Export")
-        }
-        Button(onClick = onCancel, modifier = Modifier.fillMaxWidth().padding(top = 4.dp)) {
-            Text("Cancel")
         }
     }
 }
