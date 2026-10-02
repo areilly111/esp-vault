@@ -172,7 +172,11 @@ class BleManager(private val context: Context, private val listener: Listener) {
 
     fun connect(device: BluetoothDevice) {
         cleanup()
-        gatt = device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
+        try {
+            gatt = device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
+        } catch (e: Exception) {
+            main.post { listener.onError("Couldn't connect: ${e.message}") }
+        }
     }
 
     fun disconnect() {

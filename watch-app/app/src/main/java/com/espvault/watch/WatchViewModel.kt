@@ -235,6 +235,13 @@ class WatchViewModel : ViewModel(), BleManager.Listener {
         resetBwSetup()
     }
 
+    /** Clears a sync error but keeps the wizard's typed values, for retry. */
+    fun clearBwError() {
+        bwJob?.cancel()
+        _bwState.value = ConnState.Idle
+        _bwStatus.value = ""
+    }
+
     // ---- auto-scan handoff ----
     // The device screen auto-scans only when a device job (import/export)
     // was explicitly requested from Settings — not on swipe-back.

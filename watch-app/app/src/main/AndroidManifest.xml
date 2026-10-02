@@ -13,6 +13,7 @@
 
     <application
         android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
         android:label="Esp Vault"
         android:theme="@android:style/Theme.DeviceDefault">
         <activity

@@ -77,7 +77,19 @@ object BitwardenSync {
         val syncJson = apiGet(base, "/api/sync?excludeDomains=true", accessToken)
 
         onStatus("Decrypting…")
-        val data = parseVault(syncJson, encKey, macKey)
+        // Vault items are encrypted with the account's symmetric key, which
+        // is itself encrypted with the stretched master key (profile.key).
+        // Decrypting items with the stretched key directly yields nothing.
+        val profileKey = syncJson.optJSONObject("profile")?.optString("key", "").orEmpty()
+        if (profileKey.isEmpty()) throw BwException("Couldn't unlock vault key")
+        val accountKey = try {
+            decryptCipherBytes(profileKey, encKey, macKey)
+        } catch (_: Exception) {
+            throw BwException("Couldn't unlock vault key")
+        }
+        if (accountKey.size != 64) throw BwException("Couldn't unlock vault key")
+        val data = parseVault(syncJson, accountKey.copyOfRange(0, 32), accountKey.copyOfRange(32, 64))
+        accountKey.fill(0)
         encKey.fill(0); macKey.fill(0)
 
         data to refreshToken
@@ -88,11 +100,16 @@ object BitwardenSync {
     private fun prelogin(base: String, email: String): KdfInfo {
         val body = JSONObject().put("email", email.trim()).toString()
         val res = postJson("$base/identity/accounts/prelogin", body, null)
+        // Servers answer with capital-K "Kdf…"; accept either casing.
+        fun io(default: Int, vararg names: String): Int {
+            for (n in names) if (res.has(n) && !res.isNull(n)) return res.optInt(n, default)
+            return default
+        }
         return KdfInfo(
-            type = res.optInt("kdf", 0),
-            iterations = res.optInt("kdfIterations", 600_000),
-            memoryKb = res.optInt("kdfMemory", 65536),
-            parallelism = res.optInt("kdfParallelism", 4)
+            type = io(0, "Kdf", "kdf"),
+            iterations = io(600_000, "KdfIterations", "kdfIterations"),
+            memoryKb = io(65_536, "KdfMemory", "kdfMemory"),
+            parallelism = io(4, "KdfParallelism", "kdfParallelism")
         )
     }
 
@@ -265,8 +282,9 @@ object BitwardenSync {
     /**
      * Decrypts a Bitwarden cipher string: "encType.iv|data|mac", all base64.
      * Supports type 0 (AesCbc256_B64) and type 2 (AesCbc256_HmacSha256_B64).
+     * Returns the raw decrypted bytes.
      */
-    private fun decryptCipherString(enc: String, encKey: ByteArray, macKey: ByteArray): String {
+    private fun decryptCipherBytes(enc: String, encKey: ByteArray, macKey: ByteArray): ByteArray {
         val dot = enc.indexOf('.')
         require(dot > 0) { "bad cipher string" }
         val type = enc.substring(0, dot).toInt()
@@ -282,8 +300,11 @@ object BitwardenSync {
         }
         val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
         cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(encKey, "AES"), IvParameterSpec(iv))
-        return String(cipher.doFinal(data), StandardCharsets.UTF_8)
+        return cipher.doFinal(data)
     }
+
+    private fun decryptCipherString(enc: String, encKey: ByteArray, macKey: ByteArray): String =
+        String(decryptCipherBytes(enc, encKey, macKey), StandardCharsets.UTF_8)
 
     private fun hmacSha256(key: ByteArray, data: ByteArray): ByteArray {
         val mac = Mac.getInstance("HmacSHA256")

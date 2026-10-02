@@ -14,7 +14,9 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -96,6 +98,9 @@ fun WatchApp(vm: WatchViewModel = viewModel()) {
     val activity = context as? MainActivity
     val granted by (activity?.permsGranted ?: mutableStateOf(true))
     var ready by remember { mutableStateOf(false) }
+    // Bluetooth is optional now (Bitwarden is the default sync), so the
+    // permission gate can be skipped — device features just won't scan.
+    var bleSkipped by remember { mutableStateOf(false) }
     // Init once permissions are granted; the cache loads synchronously here
     // so the app is usable immediately, with or without the device.
     LaunchedEffect(granted) {
@@ -105,10 +110,11 @@ fun WatchApp(vm: WatchViewModel = viewModel()) {
         }
     }
     MaterialTheme {
-        if (!granted) {
+        if (!granted && !bleSkipped) {
             PermissionGate(
                 permanentlyDenied = activity?.permsPermanentlyDenied() == true,
-                onRequest = { activity?.requestBlePerms() }
+                onRequest = { activity?.requestBlePerms() },
+                onSkip = { bleSkipped = true }
             )
             return@MaterialTheme
         }
@@ -188,7 +194,10 @@ fun ConnectScreen(vm: WatchViewModel) {
     // Auto-scan only when a device job was explicitly requested — not on swipe-back.
     LaunchedEffect(Unit) { if (vm.consumeAutoScan()) vm.startScan() }
     Column(
-        modifier = Modifier.fillMaxSize().padding(8.dp),
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(8.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
@@ -288,7 +297,10 @@ fun PinScreen(vm: WatchViewModel) {
     }
 
     Column(
-        modifier = Modifier.fillMaxSize().padding(8.dp),
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(8.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
@@ -323,6 +335,14 @@ fun CodesScreen(
 ) {
     val totps by vm.totps.collectAsState()
     val lastSync by vm.lastSyncAt.collectAsState()
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var copiedLabel by remember { mutableStateOf<String?>(null) }
+    if (copiedLabel != null) {
+        LaunchedEffect(copiedLabel) {
+            delay(1200)
+            copiedLabel = null
+        }
+    }
     // Tick every second to refresh codes + countdown.
     var now by remember { mutableStateOf(System.currentTimeMillis()) }
     LaunchedEffect(Unit) {
@@ -353,6 +373,13 @@ fun CodesScreen(
                         modifier = Modifier.padding(bottom = 4.dp)
                     )
                 }
+                if (copiedLabel != null) {
+                    Text(
+                        "$copiedLabel copied ✓",
+                        style = MaterialTheme.typography.caption1,
+                        modifier = Modifier.padding(bottom = 4.dp)
+                    )
+                }
             }
         }
         if (totps.isEmpty()) {
@@ -373,7 +400,15 @@ fun CodesScreen(
                         Text(code, style = MaterialTheme.typography.title2)
                     }
                 },
-                onClick = { /* tap could copy — watch clipboard is limited; skip */ },
+                onClick = {
+                    try {
+                        val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                            as android.content.ClipboardManager
+                        cm.setPrimaryClip(android.content.ClipData.newPlainText("EspVault", code))
+                        copiedLabel = entry.label
+                    } catch (_: Exception) {
+                    }
+                },
                 colors = ChipDefaults.chipColors(),
                 modifier = Modifier.fillMaxWidth()
             )
@@ -444,8 +479,28 @@ fun PasswordsScreen(vm: WatchViewModel, onSelect: (Int) -> Unit) {
 fun PwDetailScreen(vm: WatchViewModel) {
     // Served straight from the offline cache — no device needed.
     val d = vm.selectedPw.collectAsState().value
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var copied by remember { mutableStateOf<String?>(null) }
+    if (copied != null) {
+        LaunchedEffect(copied) {
+            delay(1200)
+            copied = null
+        }
+    }
+    fun copy(text: String, what: String) {
+        try {
+            val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                as android.content.ClipboardManager
+            cm.setPrimaryClip(android.content.ClipData.newPlainText("EspVault", text))
+            copied = what
+        } catch (_: Exception) {
+        }
+    }
     Column(
-        modifier = Modifier.fillMaxSize().padding(12.dp),
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(12.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
@@ -453,33 +508,54 @@ fun PwDetailScreen(vm: WatchViewModel) {
             Text("Nothing selected", textAlign = TextAlign.Center)
         } else {
             Text(d.label, style = MaterialTheme.typography.title3, textAlign = TextAlign.Center)
-            if (d.username.isNotEmpty()) {
-                Text("User", style = MaterialTheme.typography.caption1, modifier = Modifier.padding(top = 8.dp))
-                Text(d.username, textAlign = TextAlign.Center)
+            if (copied != null) {
+                Text("$copied copied ✓", style = MaterialTheme.typography.caption1,
+                    textAlign = TextAlign.Center, modifier = Modifier.padding(top = 4.dp))
             }
-            Text("Password", style = MaterialTheme.typography.caption1, modifier = Modifier.padding(top = 8.dp))
-            Text(d.password, textAlign = TextAlign.Center)
+            if (d.username.isNotEmpty()) {
+                Text("User — tap to copy", style = MaterialTheme.typography.caption1,
+                    modifier = Modifier.padding(top = 8.dp))
+                Chip(
+                    label = { Text(d.username) },
+                    onClick = { copy(d.username, "Username") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+            Text("Password — tap to copy", style = MaterialTheme.typography.caption1,
+                modifier = Modifier.padding(top = 8.dp))
+            Chip(
+                label = { Text(d.password) },
+                onClick = { copy(d.password, "Password") },
+                modifier = Modifier.fillMaxWidth()
+            )
         }
     }
 }
 
 @Composable
-fun PermissionGate(permanentlyDenied: Boolean, onRequest: () -> Unit) {
+fun PermissionGate(
+    permanentlyDenied: Boolean,
+    onRequest: () -> Unit,
+    onSkip: () -> Unit
+) {
     Column(
-        modifier = Modifier.fillMaxSize().padding(16.dp),
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
         Text(
-            "Bluetooth needed",
+            "Bluetooth needed?",
             style = MaterialTheme.typography.title3,
             textAlign = TextAlign.Center
         )
         Text(
             if (permanentlyDenied)
-                "Permission was denied. Open Settings > Apps > Esp Vault > Permissions and allow Bluetooth, then come back."
+                "Permission was denied. To use the vault device later, open Settings > Apps > Esp Vault > Permissions and allow Bluetooth."
             else
-                "Esp Vault needs Bluetooth permission to find and connect to your vault device.",
+                "Bluetooth is only needed for the optional vault device. Bitwarden sync works without it.",
             style = MaterialTheme.typography.body2,
             textAlign = TextAlign.Center,
             modifier = Modifier.padding(top = 8.dp, bottom = 12.dp)
@@ -487,6 +563,10 @@ fun PermissionGate(permanentlyDenied: Boolean, onRequest: () -> Unit) {
         if (!permanentlyDenied) {
             Button(onClick = onRequest) { Text("Allow Bluetooth") }
         }
+        Button(
+            onClick = onSkip,
+            modifier = Modifier.padding(top = 4.dp)
+        ) { Text("Continue without it") }
     }
 }
 
@@ -618,7 +698,10 @@ fun ExportConfirmScreen(
     val totps by vm.totps.collectAsState()
     val pws by vm.pwEntries.collectAsState()
     Column(
-        modifier = Modifier.fillMaxSize().padding(12.dp),
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(12.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
@@ -678,7 +761,10 @@ fun BwSyncScreen(vm: WatchViewModel, onDone: () -> Unit) {
     }
 
     Column(
-        modifier = Modifier.fillMaxSize().padding(8.dp),
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(8.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
@@ -694,7 +780,13 @@ fun BwSyncScreen(vm: WatchViewModel, onDone: () -> Unit) {
             }
             is ConnState.Error -> {
                 Text(s.msg, textAlign = TextAlign.Center)
-                Button(onClick = { vm.resetBwState() }, modifier = Modifier.padding(top = 8.dp)) {
+                Text(
+                    "Your entries are kept — fix and retry.",
+                    style = MaterialTheme.typography.caption2,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(top = 4.dp)
+                )
+                Button(onClick = { vm.clearBwError() }, modifier = Modifier.padding(top = 8.dp)) {
                     Text("Back")
                 }
             }
