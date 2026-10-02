@@ -14,6 +14,8 @@
 
     <!-- QR code scanning for TOTP setup -->
     <uses-permission android:name="android.permission.CAMERA" />
+    <!-- Bitwarden server sync -->
+    <uses-permission android:name="android.permission.INTERNET" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
 
     <application

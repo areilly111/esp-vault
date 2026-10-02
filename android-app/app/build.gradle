@@ -7,19 +7,52 @@ android {
     namespace 'com.keychainvault.app'
     compileSdk 34
 
+    // Persistent signing key (keystore/ is git-ignored). Gradle's debug
+    // keystore lives in /root/.android and is wiped on VM replacement,
+    // which breaks in-place updates ("signatures do not match").
+    def keystorePropsFile = rootProject.file("keystore.properties")
+    def keystoreProps = new Properties()
+    if (keystorePropsFile.exists()) {
+        keystorePropsFile.withInputStream { keystoreProps.load(it) }
+    }
+
     defaultConfig {
         applicationId "com.keychainvault.app"
         minSdk 26
         targetSdk 34
-        versionCode 1
-        versionName "1.0"
+        versionCode 2
+        versionName "1.1"
+    }
+
+    // Versioned APK filenames, e.g. EspVault-Phone-1.1.apk
+    applicationVariants.all { variant ->
+        variant.outputs.all { output ->
+            outputFileName = "EspVault-Phone-${variant.versionName}.apk"
+        }
+    }
+
+    signingConfigs {
+        if (keystorePropsFile.exists()) {
+            vault {
+                storeFile rootProject.file(keystoreProps['storeFile'])
+                storePassword keystoreProps['storePassword']
+                keyAlias keystoreProps['keyAlias']
+                keyPassword keystoreProps['keyPassword']
+            }
+        }
     }
 
     buildTypes {
         debug {
+            if (keystorePropsFile.exists()) {
+                signingConfig signingConfigs.vault
+            }
         }
         release {
             minifyEnabled false
+            if (keystorePropsFile.exists()) {
+                signingConfig signingConfigs.vault
+            }
         }
     }
     compileOptions {
@@ -41,4 +74,6 @@ dependencies {
     implementation 'androidx.recyclerview:recyclerview:1.3.2'
     // QR code scanning for TOTP setup (ZXing - reliable, offline, no ML model)
     implementation 'com.journeyapps:zxing-android-embedded:4.3.0'
+    // Argon2id KDF for Bitwarden accounts that use it (PBKDF2 is built-in)
+    implementation 'org.bouncycastle:bcprov-jdk18on:1.78.1'
 }

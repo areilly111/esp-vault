@@ -133,6 +133,16 @@ class MainActivity : AppCompatActivity() {
     private var exportPwIndex = 0
     private var exportWatchdog: Runnable? = null
 
+    // Bitwarden server sync state (local read-only mirror of the server vault)
+    private lateinit var bwPrefs: android.content.SharedPreferences
+    private lateinit var syncedTotpAdapter: LabelAdapter
+    private lateinit var syncedPwAdapter: LabelAdapter
+    private var syncedTotps: List<SyncedTotp> = emptyList()
+    private var syncedPws: List<SyncedPw> = emptyList()
+    private var bwSyncing = false
+    private var syncedCodeDialog: AlertDialog? = null
+    private var syncedCodeTick: Runnable? = null
+
     private var authTimeoutTask: Runnable? = null
     private var scanTimeoutTask: Runnable? = null
     private var scanning = false
@@ -237,6 +247,28 @@ class MainActivity : AppCompatActivity() {
         binding.addPwButton.setOnClickListener { showAddPwDialog() }
         binding.importButton.setOnClickListener { importPicker.launch(arrayOf("application/json")) }
         binding.exportButton.setOnClickListener { onExportClick() }
+
+        // Bitwarden server sync (local mirror; no device needed)
+        bwPrefs = getSharedPreferences("bitwarden", Context.MODE_PRIVATE)
+        syncedTotpAdapter = LabelAdapter({ onSyncedTotpSelected(it) }, {})
+        binding.syncedTotpRecycler.layoutManager = LinearLayoutManager(this)
+        binding.syncedTotpRecycler.adapter = syncedTotpAdapter
+        syncedPwAdapter = LabelAdapter({ onSyncedPwSelected(it) }, {})
+        binding.syncedPwRecycler.layoutManager = LinearLayoutManager(this)
+        binding.syncedPwRecycler.adapter = syncedPwAdapter
+        binding.bwServerEdit.setText(bwPrefs.getString("server", ""))
+        binding.bwEmailEdit.setText(bwPrefs.getString("email", ""))
+        val savedBwPw = bwPrefs.getString("master_password", "")
+        if (!savedBwPw.isNullOrEmpty()) binding.bwPasswordEdit.setText(savedBwPw)
+        binding.bwSyncButton.setOnClickListener { onBwSync() }
+        binding.bwPasswordEdit.setOnEditorActionListener { _, actionId, _ ->
+            if (actionId == EditorInfo.IME_ACTION_DONE) {
+                onBwSync()
+                true
+            } else false
+        }
+        binding.bwForgetButton.setOnClickListener { onBwForget() }
+        refreshSyncedVaultUi()
         binding.lockButton.setOnClickListener { confirmLock() }
         binding.changePwButton.setOnClickListener { onChangePw() }
         binding.saveWifiButton.setOnClickListener { onSaveWifi() }
@@ -274,6 +306,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        try {
+            dismissSyncedCodeDialog()
+        } catch (_: Exception) {
+        }
         try {
             ble.disconnect()
         } catch (_: Exception) {
@@ -1464,6 +1500,211 @@ class MainActivity : AppCompatActivity() {
             .setNegativeButton("Done", null)
             .show()
         setStatus("Backup saved.")
+    }
+
+    // ---------------- Bitwarden server sync ----------------
+    // Pulls a read-only mirror of the server vault onto the phone.
+    // Server + email are remembered; the master password is remembered
+    // after the first successful sync (private prefs, never displayed).
+
+    private fun bwStatus(s: String) {
+        binding.bwStatusText.text = s
+        binding.bwStatusText.visibility = View.VISIBLE
+    }
+
+    private fun onBwSync() {
+        if (bwSyncing) return
+        var server = binding.bwServerEdit.text?.toString().orEmpty().trim()
+        val email = binding.bwEmailEdit.text?.toString().orEmpty().trim()
+        val password = binding.bwPasswordEdit.text?.toString().orEmpty()
+        if (server.isEmpty() || email.isEmpty() || password.isEmpty()) {
+            bwStatus("Enter the server, email and master password first.")
+            return
+        }
+        // Bare host -> assume https, like the watch app.
+        if (!server.startsWith("http://") && !server.startsWith("https://")) {
+            server = "https://$server"
+            binding.bwServerEdit.setText(server)
+        }
+        bwPrefs.edit()
+            .putString("server", server)
+            .putString("email", email)
+            .apply()
+        val savedRefresh = bwPrefs.getString("refresh_token", null)
+        bwSyncing = true
+        binding.bwSyncButton.isEnabled = false
+        bwStatus("Starting sync…")
+        Thread {
+            try {
+                val (data, refreshToken) = BitwardenServer.sync(
+                    server, email, password, savedRefresh
+                ) { step -> handler.post { if (bwSyncing) bwStatus(step) } }
+                SyncedVault.save(this, data.totps, data.passwords)
+                // Remember the master password + refresh token for one-tap
+                // syncs, like the watch.
+                val ed = bwPrefs.edit().putString("master_password", password)
+                if (refreshToken != null) ed.putString("refresh_token", refreshToken)
+                else ed.remove("refresh_token")
+                ed.apply()
+                handler.post {
+                    bwSyncing = false
+                    binding.bwSyncButton.isEnabled = true
+                    bwStatus("")
+                    binding.bwStatusText.visibility = View.GONE
+                    refreshSyncedVaultUi()
+                    setStatus(
+                        "Synced ${data.totps.size} codes and " +
+                            "${data.passwords.size} passwords."
+                    )
+                }
+            } catch (e: Exception) {
+                val msg = (e as? BitwardenServer.BwException)?.message
+                    ?: "Sync failed: ${e.message ?: e.javaClass.simpleName}"
+                handler.post {
+                    bwSyncing = false
+                    binding.bwSyncButton.isEnabled = true
+                    bwStatus(msg)
+                }
+            }
+        }.start()
+    }
+
+    private fun onBwForget() {
+        bwPrefs.edit()
+            .remove("master_password")
+            .remove("refresh_token")
+            .apply()
+        binding.bwPasswordEdit.setText("")
+        binding.bwForgetButton.visibility = View.GONE
+        setStatus("Saved Bitwarden password forgotten.")
+    }
+
+    private fun refreshSyncedVaultUi() {
+        val snap = SyncedVault.load(this)
+        syncedTotps = snap.totps
+        syncedPws = snap.passwords
+        syncedTotpAdapter.setItems(syncedTotps.map { it.label })
+        syncedPwAdapter.setItems(syncedPws.map { it.label })
+        val has = SyncedVault.hasCache(this)
+        binding.syncedVaultCard.visibility = if (has) View.VISIBLE else View.GONE
+        binding.syncedTotpHeader.text = "Codes (${syncedTotps.size})"
+        binding.syncedPwHeader.text = "Passwords (${syncedPws.size})"
+        if (has && snap.syncedAt > 0) {
+            val whenStr = java.text.SimpleDateFormat("MMM d, HH:mm", java.util.Locale.US)
+                .format(java.util.Date(snap.syncedAt))
+            binding.bwLastSyncText.text =
+                "Last synced $whenStr — ${syncedTotps.size} codes, ${syncedPws.size} passwords."
+            binding.bwLastSyncText.visibility = View.VISIBLE
+        } else {
+            binding.bwLastSyncText.visibility = View.GONE
+        }
+        binding.bwForgetButton.visibility =
+            if (bwPrefs.getString("master_password", "").isNullOrEmpty()) View.GONE
+            else View.VISIBLE
+    }
+
+    /** Synced TOTP: compute the code locally and show it in a live dialog. */
+    private fun onSyncedTotpSelected(index: Int) {
+        val entry = syncedTotps.getOrNull(index) ?: return
+        dismissSyncedCodeDialog()
+        val codeView = android.widget.TextView(this).apply {
+            textSize = 32f
+            typeface = android.graphics.Typeface.MONOSPACE
+            setPadding(32, 24, 32, 8)
+        }
+        val countView = android.widget.TextView(this).apply {
+            textSize = 14f
+            setPadding(32, 0, 32, 16)
+        }
+        val layout = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            addView(codeView)
+            addView(countView)
+        }
+        fun tick() {
+            val code = Totp.generate(entry.secret)
+            val left = Totp.secondsLeft()
+            if (code == null) {
+                codeView.text = "Bad secret"
+                countView.text = ""
+            } else {
+                codeView.text =
+                    if (code.length >= 4) code.substring(0, 3) + " " + code.substring(3)
+                    else code
+                countView.text = "Refreshes in ${left}s — tap Copy to copy the code."
+            }
+        }
+        tick()
+        syncedCodeTick = object : Runnable {
+            override fun run() {
+                if (syncedCodeDialog?.isShowing == true) {
+                    tick()
+                    handler.postDelayed(this, 1000)
+                }
+            }
+        }.also { handler.postDelayed(it, 1000) }
+        syncedCodeDialog = AlertDialog.Builder(this)
+            .setTitle(entry.label)
+            .setView(layout)
+            .setPositiveButton("Copy") { _, _ ->
+                val code = Totp.generate(entry.secret).orEmpty()
+                copyToClipboard(code, "Code copied.")
+            }
+            .setNegativeButton("Close", null)
+            .setOnDismissListener { dismissSyncedCodeDialog() }
+            .show()
+    }
+
+    private fun dismissSyncedCodeDialog() {
+        syncedCodeTick?.let { handler.removeCallbacks(it) }
+        syncedCodeTick = null
+        syncedCodeDialog?.dismiss()
+        syncedCodeDialog = null
+    }
+
+    /** Synced password: show username/password in a dialog with copy buttons. */
+    private fun onSyncedPwSelected(index: Int) {
+        val entry = syncedPws.getOrNull(index) ?: return
+        val userView = android.widget.TextView(this).apply {
+            text = entry.username.ifEmpty { "(no username)" }
+            textSize = 16f
+            setPadding(32, 16, 32, 4)
+            setTextIsSelectable(true)
+        }
+        val passView = android.widget.TextView(this).apply {
+            text = mask(entry.password)
+            textSize = 16f
+            typeface = android.graphics.Typeface.MONOSPACE
+            setPadding(32, 4, 32, 16)
+            setTextIsSelectable(true)
+        }
+        var visible = false
+        val layout = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            addView(userView)
+            addView(passView)
+        }
+        val dialog = AlertDialog.Builder(this)
+            .setTitle(entry.label)
+            .setView(layout)
+            .setNeutralButton("Show") { _, _ -> }
+            .setPositiveButton("Copy password") { _, _ ->
+                copyToClipboard(entry.password, "Password copied.")
+            }
+            .setNegativeButton("Close", null)
+            .show()
+        // Copy username on long-press of the username view.
+        userView.setOnLongClickListener {
+            copyToClipboard(entry.username, "Username copied.")
+            true
+        }
+        // The neutral button toggles visibility instead of dismissing.
+        dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
+            visible = !visible
+            passView.text = if (visible) entry.password else mask(entry.password)
+            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).text =
+                if (visible) "Hide" else "Show"
+        }
     }
 
     // ---------------- device actions ----------------
