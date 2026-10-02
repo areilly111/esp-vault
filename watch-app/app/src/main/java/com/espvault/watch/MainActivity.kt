@@ -136,7 +136,7 @@ fun WatchApp(vm: WatchViewModel = viewModel()) {
         LaunchedEffect(conn, hasCache) {
             val target = when (conn) {
                 is ConnState.NeedPin -> "pin"
-                is ConnState.Idle -> if (hasCache) "codes" else "bwsync"
+                is ConnState.Idle -> if (hasCache) "menu" else "bwsync"
                 else -> "connect" // Scanning, Connecting, Syncing, Ready, Error
             }
             if (nav.currentDestination?.route != target) nav.navigate(target)
@@ -144,18 +144,20 @@ fun WatchApp(vm: WatchViewModel = viewModel()) {
 
         SwipeDismissableNavHost(
             navController = nav,
-            startDestination = if (hasCache) "codes" else "bwsync"
+            startDestination = if (hasCache) "menu" else "bwsync"
         ) {
             composable("connect") { ConnectScreen(vm) }
             composable("pin") { PinScreen(vm) }
-            composable("codes") {
-                CodesScreen(
+            composable("menu") {
+                MenuScreen(
                     vm,
+                    onTotps = { nav.navigate("totps") },
                     onPasswords = { nav.navigate("passwords") },
                     onSync = { nav.navigate("bwsync") },
                     onSettings = { nav.navigate("settings") }
                 )
             }
+            composable("totps") { TotpsScreen(vm) }
             composable("settings") {
                 SettingsScreen(
                     vm,
@@ -172,7 +174,7 @@ fun WatchApp(vm: WatchViewModel = viewModel()) {
                 )
             }
             composable("bwsync") {
-                BwSyncScreen(vm, onDone = { nav.popBackStack("codes", false) })
+                BwSyncScreen(vm, onDone = { nav.popBackStack("menu", false) })
             }
             composable("passwords") {
                 PasswordsScreen(vm, onSelect = { i ->
@@ -327,14 +329,73 @@ fun PinScreen(vm: WatchViewModel) {
 }
 
 @Composable
-fun CodesScreen(
+fun MenuScreen(
     vm: WatchViewModel,
+    onTotps: () -> Unit,
     onPasswords: () -> Unit,
     onSync: () -> Unit,
     onSettings: () -> Unit
 ) {
-    val totps by vm.totps.collectAsState()
     val lastSync by vm.lastSyncAt.collectAsState()
+    val totps by vm.totps.collectAsState()
+    val pws by vm.pwEntries.collectAsState()
+    ScalingLazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        state = rememberScalingLazyListState()
+    ) {
+        item {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(
+                    "Esp Vault",
+                    style = MaterialTheme.typography.title3,
+                    modifier = Modifier.padding(4.dp)
+                )
+                if (lastSync > 0) {
+                    Text(
+                        "Synced ${formatSyncTime(lastSync)}",
+                        style = MaterialTheme.typography.caption2,
+                        modifier = Modifier.padding(bottom = 4.dp)
+                    )
+                }
+            }
+        }
+        item {
+            Chip(
+                label = { Text("TOTPs (${totps.size})") },
+                onClick = onTotps,
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+        item {
+            Chip(
+                label = { Text("Passwords (${pws.size})") },
+                onClick = onPasswords,
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+        item {
+            Chip(
+                label = { Text("Sync now") },
+                onClick = onSync,
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+        item {
+            Chip(
+                label = { Text("Settings") },
+                onClick = onSettings,
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+    }
+}
+
+@Composable
+fun TotpsScreen(vm: WatchViewModel) {
+    val totps by vm.totps.collectAsState()
     val context = androidx.compose.ui.platform.LocalContext.current
     var copiedLabel by remember { mutableStateOf<String?>(null) }
     if (copiedLabel != null) {
@@ -362,17 +423,10 @@ fun CodesScreen(
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Text(
-                    "Codes  •  ${secsLeft}s",
+                    "TOTPs  •  ${secsLeft}s",
                     style = MaterialTheme.typography.caption1,
                     modifier = Modifier.padding(4.dp)
                 )
-                if (lastSync > 0) {
-                    Text(
-                        "Synced ${formatSyncTime(lastSync)}",
-                        style = MaterialTheme.typography.caption2,
-                        modifier = Modifier.padding(bottom = 4.dp)
-                    )
-                }
                 if (copiedLabel != null) {
                     Text(
                         "$copiedLabel copied ✓",
@@ -410,27 +464,6 @@ fun CodesScreen(
                     }
                 },
                 colors = ChipDefaults.chipColors(),
-                modifier = Modifier.fillMaxWidth()
-            )
-        }
-        item {
-            Chip(
-                label = { Text("Passwords") },
-                onClick = onPasswords,
-                modifier = Modifier.fillMaxWidth()
-            )
-        }
-        item {
-            Chip(
-                label = { Text("Sync now") },
-                onClick = onSync,
-                modifier = Modifier.fillMaxWidth()
-            )
-        }
-        item {
-            Chip(
-                label = { Text("Settings") },
-                onClick = onSettings,
                 modifier = Modifier.fillMaxWidth()
             )
         }
