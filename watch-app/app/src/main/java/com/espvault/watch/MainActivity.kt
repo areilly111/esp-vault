@@ -504,12 +504,17 @@ fun rememberRemoteInputLauncher(
 fun launchTextInput(
     launcher: androidx.activity.result.ActivityResultLauncher<android.content.Intent>,
     key: String,
-    label: String
+    label: String,
+    onError: (String) -> Unit = {}
 ) {
-    val remoteInput = android.app.RemoteInput.Builder(key).setLabel(label).build()
-    val intent = androidx.wear.input.RemoteInputIntentHelper.createActionRemoteInputIntent()
-    androidx.wear.input.RemoteInputIntentHelper.putRemoteInputsExtra(intent, listOf(remoteInput))
-    launcher.launch(intent)
+    try {
+        val remoteInput = android.app.RemoteInput.Builder(key).setLabel(label).build()
+        val intent = androidx.wear.input.RemoteInputIntentHelper.createActionRemoteInputIntent()
+        androidx.wear.input.RemoteInputIntentHelper.putRemoteInputsExtra(intent, listOf(remoteInput))
+        launcher.launch(intent)
+    } catch (e: Exception) {
+        onError("Couldn't open input — tap again")
+    }
 }
 
 @Composable
@@ -637,23 +642,18 @@ fun BwSyncScreen(vm: WatchViewModel, onDone: () -> Unit) {
     val server by vm.bwServer.collectAsState()
     val email by vm.bwEmail.collectAsState()
     val configured = server.isNotEmpty() && email.isNotEmpty()
+    val step by vm.bwStep.collectAsState()
+    val setupServer by vm.bwSetupServer.collectAsState()
+    val setupEmail by vm.bwSetupEmail.collectAsState()
+    var inputError by remember { mutableStateOf("") }
 
-    var setupServer by remember { mutableStateOf("") }
-    var setupEmail by remember { mutableStateOf("") }
-
-    // Indirect through a ref so the callback can launch follow-up inputs.
-    val onTextRef = remember { mutableStateOf<(String, String) -> Unit>({ _, _ -> }) }
-    val launcher = rememberRemoteInputLauncher { key, text -> onTextRef.value(key, text) }
-    onTextRef.value = { key, text ->
+    // One input at a time, launched from a tap. Results only fill the field —
+    // nothing chains another prompt, which is what made setup crash.
+    val launcher = rememberRemoteInputLauncher { key, text ->
+        inputError = ""
         when (key) {
-            "bw_server" -> {
-                setupServer = text.trim().trimEnd('/')
-                launchTextInput(launcher, "bw_email", "Email")
-            }
-            "bw_email" -> {
-                setupEmail = text.trim()
-                launchTextInput(launcher, "bw_pw", "Master password")
-            }
+            "bw_server" -> vm.setBwSetupServer(text)
+            "bw_email" -> vm.setBwSetupEmail(text)
             "bw_pw" -> {
                 val s = if (configured) server else setupServer
                 val e = if (configured) email else setupEmail
@@ -661,13 +661,10 @@ fun BwSyncScreen(vm: WatchViewModel, onDone: () -> Unit) {
             }
         }
     }
+    val onInputError: (String) -> Unit = { inputError = it }
 
-    // Fresh state each time the screen opens. If the server is already set up,
-    // go straight to the master-password prompt — Bitwarden is the default.
-    LaunchedEffect(Unit) {
-        vm.resetBwState()
-        if (configured) launchTextInput(launcher, "bw_pw", "Master password")
-    }
+    // Fresh state each time the screen opens.
+    LaunchedEffect(Unit) { vm.resetBwState() }
     // Leave on success after a beat.
     if (bwState is ConnState.Ready) {
         LaunchedEffect(Unit) {
@@ -699,6 +696,10 @@ fun BwSyncScreen(vm: WatchViewModel, onDone: () -> Unit) {
                 }
             }
             else -> {
+                if (inputError.isNotEmpty()) {
+                    Text(inputError, style = MaterialTheme.typography.caption2,
+                        textAlign = TextAlign.Center, modifier = Modifier.padding(bottom = 4.dp))
+                }
                 if (configured) {
                     Text(server, style = MaterialTheme.typography.caption1, textAlign = TextAlign.Center)
                     Text(email, style = MaterialTheme.typography.caption2, textAlign = TextAlign.Center,
@@ -711,7 +712,7 @@ fun BwSyncScreen(vm: WatchViewModel, onDone: () -> Unit) {
                     )
                     Chip(
                         label = { Text("Sync now") },
-                        onClick = { launchTextInput(launcher, "bw_pw", "Master password") },
+                        onClick = { launchTextInput(launcher, "bw_pw", "Master password", onInputError) },
                         modifier = Modifier.fillMaxWidth()
                     )
                     Chip(
@@ -720,23 +721,105 @@ fun BwSyncScreen(vm: WatchViewModel, onDone: () -> Unit) {
                         modifier = Modifier.fillMaxWidth().padding(top = 4.dp)
                     )
                 } else {
-                    Text(
-                        "One-time setup: server address, email, master password.",
-                        style = MaterialTheme.typography.caption1,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.padding(vertical = 8.dp)
-                    )
-                    Text(
-                        "Needs Wi-Fi that can reach your server.",
-                        style = MaterialTheme.typography.caption2,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.padding(bottom = 8.dp)
-                    )
-                    Button(onClick = { launchTextInput(launcher, "bw_server", "Server URL") }) {
-                        Text("Set up")
+                    // One-time setup, one visible step at a time.
+                    Text("Step ${step + 1} of 3", style = MaterialTheme.typography.caption1,
+                        modifier = Modifier.padding(bottom = 4.dp))
+                    when (step) {
+                        0 -> {
+                            BwWizardField(
+                                label = "Server URL",
+                                value = setupServer,
+                                emptyHint = "https://your-server.com",
+                                onEnter = { launchTextInput(launcher, "bw_server", "Server URL", onInputError) }
+                            )
+                            BwWizardNav(
+                                onBack = null,
+                                onNext = { vm.bwStepNext() },
+                                nextEnabled = setupServer.isNotEmpty()
+                            )
+                        }
+                        1 -> {
+                            Text(setupServer, style = MaterialTheme.typography.caption2,
+                                textAlign = TextAlign.Center, modifier = Modifier.padding(bottom = 4.dp))
+                            BwWizardField(
+                                label = "Email",
+                                value = setupEmail,
+                                emptyHint = "you@example.com",
+                                onEnter = { launchTextInput(launcher, "bw_email", "Email", onInputError) }
+                            )
+                            BwWizardNav(
+                                onBack = { vm.bwStepBack() },
+                                onNext = { vm.bwStepNext() },
+                                nextEnabled = setupEmail.isNotEmpty()
+                            )
+                        }
+                        else -> {
+                            Text(setupServer, style = MaterialTheme.typography.caption2,
+                                textAlign = TextAlign.Center)
+                            Text(setupEmail, style = MaterialTheme.typography.caption2,
+                                textAlign = TextAlign.Center, modifier = Modifier.padding(bottom = 8.dp))
+                            Text(
+                                "Master password is asked each time and never stored.",
+                                style = MaterialTheme.typography.caption2,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.padding(bottom = 8.dp)
+                            )
+                            Chip(
+                                label = { Text("Enter master password & sync") },
+                                onClick = { launchTextInput(launcher, "bw_pw", "Master password", onInputError) },
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            Chip(
+                                label = { Text("Back") },
+                                onClick = { vm.bwStepBack() },
+                                modifier = Modifier.fillMaxWidth().padding(top = 4.dp)
+                            )
+                        }
                     }
                 }
             }
+        }
+    }
+}
+
+/** One setup field: label, the value typed so far, and an Enter/Edit chip. */
+@Composable
+private fun BwWizardField(
+    label: String,
+    value: String,
+    emptyHint: String,
+    onEnter: () -> Unit
+) {
+    Text(label, style = MaterialTheme.typography.caption1, textAlign = TextAlign.Center)
+    Text(
+        value.ifEmpty { emptyHint },
+        style = MaterialTheme.typography.caption2,
+        textAlign = TextAlign.Center,
+        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
+    )
+    Chip(
+        label = { Text(if (value.isEmpty()) "Enter" else "Edit") },
+        onClick = onEnter,
+        modifier = Modifier.fillMaxWidth()
+    )
+}
+
+/** Back / Next row for the setup wizard. */
+@Composable
+private fun BwWizardNav(
+    onBack: (() -> Unit)?,
+    onNext: () -> Unit,
+    nextEnabled: Boolean
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        if (onBack != null) {
+            Button(onClick = onBack, modifier = Modifier.weight(1f)) { Text("Back") }
+        }
+        Button(onClick = onNext, enabled = nextEnabled, modifier = Modifier.weight(1f)) {
+            Text("Next")
         }
     }
 }

@@ -158,6 +158,25 @@ class WatchViewModel : ViewModel(), BleManager.Listener {
         _bwServer.value = ""
         _bwEmail.value = ""
         _bwState.value = ConnState.Idle
+        resetBwSetup()
+    }
+
+    // ---- Bitwarden setup wizard (one visible step at a time) ----
+    private val _bwStep = MutableStateFlow(0) // 0 = server, 1 = email, 2 = master password
+    val bwStep: StateFlow<Int> = _bwStep
+    private val _bwSetupServer = MutableStateFlow("")
+    val bwSetupServer: StateFlow<String> = _bwSetupServer
+    private val _bwSetupEmail = MutableStateFlow("")
+    val bwSetupEmail: StateFlow<String> = _bwSetupEmail
+
+    fun setBwSetupServer(v: String) { _bwSetupServer.value = v.trim().trimEnd('/') }
+    fun setBwSetupEmail(v: String) { _bwSetupEmail.value = v.trim() }
+    fun bwStepNext() { if (_bwStep.value < 2) _bwStep.value++ }
+    fun bwStepBack() { if (_bwStep.value > 0) _bwStep.value-- }
+    private fun resetBwSetup() {
+        _bwStep.value = 0
+        _bwSetupServer.value = ""
+        _bwSetupEmail.value = ""
     }
 
     /**
@@ -206,6 +225,7 @@ class WatchViewModel : ViewModel(), BleManager.Listener {
         bwJob?.cancel()
         _bwState.value = ConnState.Idle
         _bwStatus.value = ""
+        resetBwSetup()
     }
 
     // ---- auto-scan handoff ----
