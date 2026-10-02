@@ -169,7 +169,14 @@ class WatchViewModel : ViewModel(), BleManager.Listener {
     private val _bwSetupEmail = MutableStateFlow("")
     val bwSetupEmail: StateFlow<String> = _bwSetupEmail
 
-    fun setBwSetupServer(v: String) { _bwSetupServer.value = v.trim().trimEnd('/') }
+    /** Adds https:// when the user typed a bare host — one less thing to type. */
+    fun setBwSetupServer(v: String) {
+        var s = v.trim().trimEnd('/')
+        if (s.isNotEmpty() && !s.startsWith("http://") && !s.startsWith("https://")) {
+            s = "https://$s"
+        }
+        _bwSetupServer.value = s
+    }
     fun setBwSetupEmail(v: String) { _bwSetupEmail.value = v.trim() }
     fun bwStepNext() { if (_bwStep.value < 2) _bwStep.value++ }
     fun bwStepBack() { if (_bwStep.value > 0) _bwStep.value-- }

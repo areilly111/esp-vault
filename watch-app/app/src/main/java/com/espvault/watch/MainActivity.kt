@@ -6,12 +6,15 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -729,7 +732,8 @@ fun BwSyncScreen(vm: WatchViewModel, onDone: () -> Unit) {
                             BwWizardField(
                                 label = "Server URL",
                                 value = setupServer,
-                                emptyHint = "https://your-server.com",
+                                emptyHint = "vault.example.com",
+                                explanation = "Your self-hosted Bitwarden address. https:// is added for you.",
                                 onEnter = { launchTextInput(launcher, "bw_server", "Server URL", onInputError) }
                             )
                             BwWizardNav(
@@ -745,6 +749,7 @@ fun BwSyncScreen(vm: WatchViewModel, onDone: () -> Unit) {
                                 label = "Email",
                                 value = setupEmail,
                                 emptyHint = "you@example.com",
+                                explanation = "The email you log into Bitwarden with.",
                                 onEnter = { launchTextInput(launcher, "bw_email", "Email", onInputError) }
                             )
                             BwWizardNav(
@@ -754,12 +759,14 @@ fun BwSyncScreen(vm: WatchViewModel, onDone: () -> Unit) {
                             )
                         }
                         else -> {
+                            Text("Master password", style = MaterialTheme.typography.caption1,
+                                textAlign = TextAlign.Center)
                             Text(setupServer, style = MaterialTheme.typography.caption2,
                                 textAlign = TextAlign.Center)
                             Text(setupEmail, style = MaterialTheme.typography.caption2,
-                                textAlign = TextAlign.Center, modifier = Modifier.padding(bottom = 8.dp))
+                                textAlign = TextAlign.Center, modifier = Modifier.padding(bottom = 4.dp))
                             Text(
-                                "Master password is asked each time and never stored.",
+                                "Unlocks your vault for this sync only. It is never stored on the watch.",
                                 style = MaterialTheme.typography.caption2,
                                 textAlign = TextAlign.Center,
                                 modifier = Modifier.padding(bottom = 8.dp)
@@ -782,23 +789,42 @@ fun BwSyncScreen(vm: WatchViewModel, onDone: () -> Unit) {
     }
 }
 
-/** One setup field: label, the value typed so far, and an Enter/Edit chip. */
+/** One setup field: labeled box showing the typed value, explanation, Enter/Edit chip. */
 @Composable
 private fun BwWizardField(
     label: String,
     value: String,
     emptyHint: String,
+    explanation: String,
     onEnter: () -> Unit
 ) {
     Text(label, style = MaterialTheme.typography.caption1, textAlign = TextAlign.Center)
     Text(
-        value.ifEmpty { emptyHint },
+        explanation,
         style = MaterialTheme.typography.caption2,
         textAlign = TextAlign.Center,
-        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
+        modifier = Modifier.padding(top = 2.dp)
     )
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 6.dp)
+            .border(
+                1.dp,
+                MaterialTheme.colors.onSurface.copy(alpha = 0.4f),
+                RoundedCornerShape(8.dp)
+            )
+            .padding(horizontal = 8.dp, vertical = 10.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            value.ifEmpty { emptyHint },
+            style = MaterialTheme.typography.body2,
+            textAlign = TextAlign.Center
+        )
+    }
     Chip(
-        label = { Text(if (value.isEmpty()) "Enter" else "Edit") },
+        label = { Text(if (value.isEmpty()) "Enter $label" else "Edit $label") },
         onClick = onEnter,
         modifier = Modifier.fillMaxWidth()
     )
