@@ -65,8 +65,9 @@ class WatchViewModel : ViewModel(), BleManager.Listener {
 
     // ---- Bitwarden server sync (second sync source) ----
     // Server URL + email are kept in private prefs; the refresh token too so
-    // "Sync now" is one tap. The master password is never stored — it's asked
-    // for on every sync and only lives in memory long enough to derive keys.
+    // "Sync now" is one tap. The master password is saved to private prefs
+    // after the first successful sync (never displayed) — the user's explicit
+    // choice for one-tap syncs; "Forget saved password" removes it.
     private val _bwServer = MutableStateFlow("")
     val bwServer: StateFlow<String> = _bwServer
 
@@ -78,6 +79,13 @@ class WatchViewModel : ViewModel(), BleManager.Listener {
 
     private val _bwStatus = MutableStateFlow("")
     val bwStatus: StateFlow<String> = _bwStatus
+
+    // Remembered master password: saved to private prefs after the first
+    // *successful* sync, never shown in the UI, so "Sync now" is one tap.
+    // Same storage caveat as the vault cache itself (app-private plaintext
+    // on a personal device) — the user's explicit tradeoff for convenience.
+    private val _bwHasSavedPw = MutableStateFlow(false)
+    val bwHasSavedPw: StateFlow<Boolean> = _bwHasSavedPw
 
     private var bwJob: Job? = null
 
@@ -111,6 +119,7 @@ class WatchViewModel : ViewModel(), BleManager.Listener {
         val prefs = context.applicationContext.getSharedPreferences("bw", Context.MODE_PRIVATE)
         _bwServer.value = prefs.getString("server", "").orEmpty()
         _bwEmail.value = prefs.getString("email", "").orEmpty()
+        _bwHasSavedPw.value = prefs.getString("master_pw", null) != null
     }
 
     fun startScan() {
@@ -157,8 +166,17 @@ class WatchViewModel : ViewModel(), BleManager.Listener {
         ctx.getSharedPreferences("bw", Context.MODE_PRIVATE).edit().clear().apply()
         _bwServer.value = ""
         _bwEmail.value = ""
+        _bwHasSavedPw.value = false
         _bwState.value = ConnState.Idle
         resetBwSetup()
+    }
+
+    /** Forgets just the saved master password; server + email stay. */
+    fun clearBwSavedPw() {
+        val ctx = appContext ?: return
+        ctx.getSharedPreferences("bw", Context.MODE_PRIVATE).edit().remove("master_pw").apply()
+        _bwHasSavedPw.value = false
+        _bwState.value = ConnState.Idle
     }
 
     // ---- Bitwarden setup wizard (one visible step at a time) ----
@@ -190,7 +208,8 @@ class WatchViewModel : ViewModel(), BleManager.Listener {
      * Pulls the vault from the Bitwarden server, decrypts it on-watch, and
      * replaces the local cache — the same cache the BLE sync fills.
      * [server]/[email] are remembered for next time when non-empty;
-     * [password] (master password) is never stored.
+     * [password] is saved to private prefs after a successful sync (the
+     * user's choice for one-tap syncs) and never displayed.
      */
     fun syncFromBitwarden(server: String, email: String, password: String) {
         val ctx = appContext ?: return
@@ -204,14 +223,17 @@ class WatchViewModel : ViewModel(), BleManager.Listener {
                 val (data, newRefresh) = BitwardenSync.sync(
                     server, email, password, savedRefresh
                 ) { _bwStatus.value = it }
-                // Remember server+email+refresh for one-tap syncs.
+                // Remember server+email+refresh for one-tap syncs, and the
+                // master password itself (never displayed) after a good sync.
                 prefs.edit()
                     .putString("server", server.trim().trimEnd('/'))
                     .putString("email", email.trim())
                     .putString("refresh", newRefresh ?: savedRefresh)
+                    .putString("master_pw", password)
                     .apply()
                 _bwServer.value = server.trim().trimEnd('/')
                 _bwEmail.value = email.trim()
+                _bwHasSavedPw.value = true
                 // Same finish as a BLE sync: cache becomes the app.
                 _totps.value = data.totps
                 _pwEntries.value = data.passwords
@@ -226,6 +248,17 @@ class WatchViewModel : ViewModel(), BleManager.Listener {
                 )
             }
         }
+    }
+
+    /** One-tap sync using the remembered server, email, and master password. */
+    fun syncFromBitwardenSaved() {
+        val ctx = appContext ?: return
+        val prefs = ctx.getSharedPreferences("bw", Context.MODE_PRIVATE)
+        val server = prefs.getString("server", "").orEmpty()
+        val email = prefs.getString("email", "").orEmpty()
+        val pw = prefs.getString("master_pw", null) ?: return
+        if (server.isEmpty() || email.isEmpty()) return
+        syncFromBitwarden(server, email, pw)
     }
 
     fun resetBwState() {

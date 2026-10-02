@@ -271,32 +271,19 @@ fun ConnectScreen(vm: WatchViewModel) {
 @Composable
 fun PinScreen(vm: WatchViewModel) {
     val conn by vm.conn.collectAsState()
-    var attempted by remember { mutableStateOf(false) }
+    var inputError by remember { mutableStateOf("") }
 
     // RemoteInput = the native watch text entry (voice, keyboard, emoji).
-    val inputLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
-        androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        val results = android.app.RemoteInput.getResultsFromIntent(result.data)
-        val pin = results?.getCharSequence("pin")?.toString().orEmpty()
-        if (pin.isNotEmpty()) {
-            attempted = true
-            vm.authenticate(pin)
-        }
+    val launcher = rememberRemoteInputLauncher { key, text ->
+        inputError = ""
+        if (key == "pin" && text.isNotEmpty()) vm.authenticate(text)
     }
-    val context = androidx.compose.ui.platform.LocalContext.current
+    val promptPin: () -> Unit = {
+        launchTextInput(launcher, "pin", "Vault PIN") { inputError = it }
+    }
 
     // Pop the input UI the first time this screen shows.
-    LaunchedEffect(Unit) {
-        val remoteInputs = listOf(
-            android.app.RemoteInput.Builder("pin")
-                .setLabel("Vault PIN")
-                .build()
-        )
-        val intent = androidx.wear.input.RemoteInputIntentHelper.createActionRemoteInputIntent()
-        androidx.wear.input.RemoteInputIntentHelper.putRemoteInputsExtra(intent, remoteInputs)
-        inputLauncher.launch(intent)
-    }
+    LaunchedEffect(Unit) { promptPin() }
 
     Column(
         modifier = Modifier
@@ -306,7 +293,17 @@ fun PinScreen(vm: WatchViewModel) {
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
-        Text("Enter vault PIN", style = MaterialTheme.typography.title3)
+        Text("Vault PIN", style = MaterialTheme.typography.title3)
+        Text(
+            "Your ESP32 vault's PIN — not your Bitwarden password.",
+            style = MaterialTheme.typography.caption2,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.padding(vertical = 4.dp)
+        )
+        if (inputError.isNotEmpty()) {
+            Text(inputError, style = MaterialTheme.typography.caption2,
+                textAlign = TextAlign.Center, modifier = Modifier.padding(bottom = 4.dp))
+        }
         when {
             conn is ConnState.Syncing -> {
                 CircularProgressIndicator(modifier = Modifier.padding(12.dp))
@@ -314,15 +311,16 @@ fun PinScreen(vm: WatchViewModel) {
             }
             conn is ConnState.Error -> {
                 Text((conn as ConnState.Error).msg, textAlign = TextAlign.Center)
-                Button(onClick = { attempted = false; vm.startScan() }, modifier = Modifier.padding(top = 8.dp)) {
+                Button(onClick = { vm.startScan() }, modifier = Modifier.padding(top = 8.dp)) {
                     Text("Retry")
                 }
             }
-            attempted -> {
-                Text("Waiting…", textAlign = TextAlign.Center)
-            }
             else -> {
-                Text("Use voice or keyboard", textAlign = TextAlign.Center)
+                Chip(
+                    label = { Text("Enter PIN") },
+                    onClick = { promptPin() },
+                    modifier = Modifier.fillMaxWidth().padding(top = 4.dp)
+                )
             }
         }
     }
@@ -447,11 +445,19 @@ fun TotpsScreen(vm: WatchViewModel) {
         }
         itemsIndexed(totps) { _, entry ->
             val code = Totp.generate(entry.secret, now) ?: "------"
+            val nextCode = Totp.generate(entry.secret, now + 30_000L) ?: "------"
             Chip(
                 label = {
                     Column {
                         Text(entry.label, style = MaterialTheme.typography.caption1)
-                        Text(code, style = MaterialTheme.typography.title2)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(code, style = MaterialTheme.typography.title2)
+                            Text(
+                                "  next $nextCode",
+                                style = MaterialTheme.typography.caption2,
+                                color = MaterialTheme.colors.onSurface.copy(alpha = 0.55f)
+                            )
+                        }
                     }
                 },
                 onClick = {
@@ -761,6 +767,7 @@ fun BwSyncScreen(vm: WatchViewModel, onDone: () -> Unit) {
     val server by vm.bwServer.collectAsState()
     val email by vm.bwEmail.collectAsState()
     val configured = server.isNotEmpty() && email.isNotEmpty()
+    val hasSavedPw by vm.bwHasSavedPw.collectAsState()
     val step by vm.bwStep.collectAsState()
     val setupServer by vm.bwSetupServer.collectAsState()
     val setupEmail by vm.bwSetupEmail.collectAsState()
@@ -832,17 +839,36 @@ fun BwSyncScreen(vm: WatchViewModel, onDone: () -> Unit) {
                     Text(server, style = MaterialTheme.typography.caption1, textAlign = TextAlign.Center)
                     Text(email, style = MaterialTheme.typography.caption2, textAlign = TextAlign.Center,
                         modifier = Modifier.padding(bottom = 8.dp))
-                    Text(
-                        "Master password is asked each time and never stored.",
-                        style = MaterialTheme.typography.caption2,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.padding(bottom = 8.dp)
-                    )
-                    Chip(
-                        label = { Text("Sync now") },
-                        onClick = { launchTextInput(launcher, "bw_pw", "Master password", onInputError) },
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                    if (hasSavedPw) {
+                        Text(
+                            "Master password is saved on this watch — never shown.",
+                            style = MaterialTheme.typography.caption2,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.padding(bottom = 8.dp)
+                        )
+                        Chip(
+                            label = { Text("Sync now") },
+                            onClick = { vm.syncFromBitwardenSaved() },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Chip(
+                            label = { Text("Forget saved password") },
+                            onClick = { vm.clearBwSavedPw() },
+                            modifier = Modifier.fillMaxWidth().padding(top = 4.dp)
+                        )
+                    } else {
+                        Text(
+                            "Master password is asked each time and never stored.",
+                            style = MaterialTheme.typography.caption2,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.padding(bottom = 8.dp)
+                        )
+                        Chip(
+                            label = { Text("Sync now") },
+                            onClick = { launchTextInput(launcher, "bw_pw", "Master password", onInputError) },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
                     Chip(
                         label = { Text("Forget server") },
                         onClick = { vm.clearBwConfig() },
@@ -891,7 +917,7 @@ fun BwSyncScreen(vm: WatchViewModel, onDone: () -> Unit) {
                             Text(setupEmail, style = MaterialTheme.typography.caption2,
                                 textAlign = TextAlign.Center, modifier = Modifier.padding(bottom = 4.dp))
                             Text(
-                                "Unlocks your vault for this sync only. It is never stored on the watch.",
+                                "Saved on the watch after a successful sync, so next time is one tap. Never shown.",
                                 style = MaterialTheme.typography.caption2,
                                 textAlign = TextAlign.Center,
                                 modifier = Modifier.padding(bottom = 8.dp)
